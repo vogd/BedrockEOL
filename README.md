@@ -12,6 +12,9 @@ Monitors Amazon Bedrock inference profiles and knowledge bases against the [Mode
 
 ## Architecture
 
+<img width="1530" height="762" alt="image" src="https://github.com/user-attachments/assets/87fccda0-51b1-4586-855a-386e8db421ba" />
+
+
 > 📐 **Full architecture diagram**: Open `architecture.drawio` in [draw.io](https://app.diagrams.net/) for the visual block diagram.
 
 ```
@@ -81,7 +84,10 @@ bedrock_EOLDataProcessor Lambda
 
 You need an AWS Config Aggregator to read inference profiles and knowledge bases across accounts.
 
+<img width="1231" height="871" alt="image" src="https://github.com/user-attachments/assets/6c1ea3ea-9948-484b-98f2-ac889bff8bb3" />
+
 > 📐 **Architecture diagrams**: Open `config.drawio` in [draw.io](https://app.diagrams.net/) to see visual diagrams of both aggregator options below.
+
 
 #### Option A: Organization-level aggregator (Payer/Management account)
 
