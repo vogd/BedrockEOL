@@ -295,6 +295,8 @@ The `Bedrock-Model-Lifecycle` dashboard shows:
 - **Legacy/EOL Resources table**: Full ARN, account, region, model, days remaining
 - **Active Resources table**: All resources using current models
 
+<img width="1475" height="766" alt="Bedrock Model Lifecycle - EOL Risk Overview" src="https://github.com/user-attachments/assets/eb5ca4e1-a657-4191-8fde-bcb5f949865f" />
+
 ### CloudWatch Metrics (namespace: `BedrockLifecycle`)
 
 | Metric | Dimensions | Description |
@@ -313,6 +315,8 @@ When `NotificationEmail` is provided:
 - CloudWatch Alarms fire when any threshold metric > 0
 - The Lambda sends a **detailed email** with full ARN list, grouped by severity
 - Alert threshold is configurable: 30, 60, or 180 days
+- 
+<img width="1356" height="544" alt="Bedrock EOL Alert Resources at Risk" src="https://github.com/user-attachments/assets/0345f335-63b4-4958-9208-45b86d565ae6" />
 
 To disable/enable alerts without redeploying:
 - CloudWatch Console → Alarms → Select alarm → Actions → Disable/Enable alarm actions
