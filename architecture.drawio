@@ -1,0 +1,207 @@
+<mxfile host="app.diagrams.net" agent="draw.io">
+  <diagram id="eol-architecture" name="Bedrock EOL Tracker Architecture">
+    <mxGraphModel dx="2154" dy="417" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="100" parent="1" style="text;html=1;align=center;verticalAlign=middle;fontSize=16;" value="Bedrock Model Lifecycle EOL Tracker — Full Architecture" vertex="1">
+          <mxGeometry height="30" width="500" x="400" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="110" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eventbridge;labelBackgroundColor=none;sketch=0;verticalLabelPosition=top;verticalAlign=bottom;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;labelPosition=center;align=center;" value="EventBridge Schedule (rate: N hours)" vertex="1">
+          <mxGeometry height="60" width="60" y="164" as="geometry" />
+        </mxCell>
+        <mxCell id="120" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#ED7100;strokeColor=none;fontColor=#232F3E;" value="bedrock_EOLDataProcessor Lambda" vertex="1">
+          <mxGeometry height="80" width="80" x="200" y="154" as="geometry" />
+        </mxCell>
+        <mxCell id="130" edge="1" parent="1" source="110" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#232F3E;" target="120">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="131" connectable="0" parent="130" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="triggers" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="140" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.config;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;" value="AWS Config Aggregator (multi-account)" vertex="1">
+          <mxGeometry height="80" width="80" x="200" y="452" as="geometry" />
+        </mxCell>
+        <mxCell id="150" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.general_internet_gateway;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#232F3E;strokeColor=none;fontColor=#232F3E;" value="Model Lifecycle Page docs.aws.amazon.com" vertex="1">
+          <mxGeometry height="60" width="60" x="-20" y="452" as="geometry" />
+        </mxCell>
+        <mxCell id="160" edge="1" parent="1" source="120" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#E7157B;" target="140">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="161" connectable="0" parent="160" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="queries profiles + KBs" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="162" edge="1" parent="1" source="120" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#232F3E;" target="150">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="220" y="310" />
+              <mxPoint x="10" y="310" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="163" connectable="0" parent="162" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="fetches + parses (HTML + AI fallback)" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="200" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#3F8624;strokeColor=none;fontColor=#232F3E;" value="S3 Bucket (bedrockeol)" vertex="1">
+          <mxGeometry height="80" width="80" x="450" y="154" as="geometry" />
+        </mxCell>
+        <mxCell id="201" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=8;fontColor=#333333;" value="&lt;font size=&quot;1&quot; face=&quot;Courier New&quot;&gt;bedrock-inference-profiles/ bedrock-knowledge-bases/ bedrock-legacy-models/ bedrock-eol-models/&amp;nbsp;&lt;/font&gt;&lt;div&gt;&lt;font size=&quot;1&quot; face=&quot;Courier New&quot;&gt;bedrock-active-models/&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="80" width="180" x="420" y="294" as="geometry" />
+        </mxCell>
+        <mxCell id="210" edge="1" parent="1" source="120" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#3F8624;" target="200">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="211" connectable="0" parent="210" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="writes JSONL" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="220" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sns;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;" value="S3 Event Notification (prefix: bedrock-*)" vertex="1">
+          <mxGeometry height="60" width="60" x="600" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="221" edge="1" parent="1" source="200" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=3;strokeColor=#E7157B;dashed=1;" target="220">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="490" y="100" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="300" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.step_functions;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#ED7100;strokeColor=none;fontColor=#232F3E;" value="Step Functions State Machine" vertex="1">
+          <mxGeometry height="80" width="80" x="700" y="190" as="geometry" />
+        </mxCell>
+        <mxCell id="310" edge="1" parent="1" source="120" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#ED7100;" target="300">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="240" y="60" />
+              <mxPoint x="740" y="60" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="311" connectable="0" parent="310" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="starts execution (Step 6)" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="320" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=8;" value="&lt;font size=&quot;1&quot;&gt;1. CheckAthenaTables&amp;nbsp;&lt;/font&gt;&lt;div&gt;&lt;font size=&quot;1&quot;&gt;2. CreateTables (IF NOT EXISTS)&amp;nbsp;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font size=&quot;1&quot;&gt;3. PublishMetrics → CloudWatch&lt;/font&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="60" width="200" x="740" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="400" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch;labelBackgroundColor=none;sketch=0;verticalLabelPosition=top;verticalAlign=bottom;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;labelBorderColor=none;labelPosition=center;align=center;" value="CloudWatch Dashboard &#xa;Bedrock-Model-Lifecycle" vertex="1">
+          <mxGeometry height="80" width="80" x="950" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="410" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch_alarm;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;" value="CloudWatch Alarms &#xa;(30d/ 60d /180d)" vertex="1">
+          <mxGeometry height="60" width="60" x="1220" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="420" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sns;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;" value="SNS Topic (email alerts with ARN list)" vertex="1">
+          <mxGeometry height="60" width="60" x="1290" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="430" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#ED7100;strokeColor=none;fontColor=#232F3E;" value="bedrock_EOL MetricsPublisher" vertex="1">
+          <mxGeometry height="60" width="60" x="950" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="440" edge="1" parent="1" source="300" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#ED7100;entryX=0.141;entryY=-0.027;entryDx=0;entryDy=0;entryPerimeter=0;" target="430">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="740" y="300" />
+              <mxPoint x="959" y="300" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="441" connectable="0" parent="440" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="Step 3" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="450" edge="1" parent="1" source="430" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#E7157B;" target="400">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="990" y="250" />
+              <mxPoint x="990" y="250" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="451" connectable="0" parent="450" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="put_metric_data + put_dashboard" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="460" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#E7157B;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1130" y="359.47" />
+              <mxPoint x="1130" y="359.47" />
+            </Array>
+            <mxPoint x="1010" y="359.47" as="sourcePoint" />
+            <mxPoint x="1290" y="359.47" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="461" connectable="0" parent="460" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="sends ARN list (if threshold hit)" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="470" edge="1" parent="1" source="410" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=1;strokeColor=#E7157B;dashed=1;" target="420">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="500" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.athena;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#8C4FFF;strokeColor=none;fontColor=#232F3E;" value="Athena Tables + View" vertex="1">
+          <mxGeometry height="80" width="80" x="680" y="518" as="geometry" />
+        </mxCell>
+        <mxCell id="510" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#8C4FFF;" target="500">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="710" y="271" />
+              <mxPoint x="710" y="380" />
+              <mxPoint x="730" y="380" />
+            </Array>
+            <mxPoint x="710" y="270" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="511" connectable="0" parent="510" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="Steps 1-2: CREATE TABLE IF NOT EXISTS" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="520" edge="1" parent="1" source="201" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=1;strokeColor=#8C4FFF;dashed=1;" target="500">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="510" y="410" />
+              <mxPoint x="700" y="410" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="521" connectable="0" parent="520" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="LOCATION s3://..." vertex="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="-21" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="600" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.quicksight;labelBackgroundColor=none;sketch=0;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#8C4FFF;strokeColor=none;fontColor=#232F3E;" value="3rd Party QuickSight / BI Tools (optional)" vertex="1">
+          <mxGeometry height="80" width="80" x="950" y="518" as="geometry" />
+        </mxCell>
+        <mxCell id="610" edge="1" parent="1" source="500" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#8C4FFF;" target="600">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="611" connectable="0" parent="610" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="bedrock_unified_view" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="620" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="Raw JSON (S3 direct) for custom integrations" vertex="1">
+          <mxGeometry height="60" width="150" x="420" y="518" as="geometry" />
+        </mxCell>
+        <mxCell id="621" edge="1" parent="1" source="201" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=1;strokeColor=#3F8624;dashed=1;" target="620">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="630" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=3;strokeColor=#3F8624;dashed=1;" target="430">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="590" y="194" />
+              <mxPoint x="590" y="160" />
+              <mxPoint x="900" y="160" />
+              <mxPoint x="900" y="360" />
+            </Array>
+            <mxPoint x="530" y="194" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="631" connectable="0" parent="630" style="edgeLabel;html=1;align=center;fontSize=9;fontStyle=2;" value="reads lifecycle + profiles" vertex="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="700" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontColor=#333333;" value="Data Flow: Schedule → DataProcessor (Config + Lifecycle page) → S3 → State Machine → Athena tables + CloudWatch metrics → Dashboard + SNS Alerts" vertex="1">
+          <mxGeometry height="30" width="700" x="30" y="700" as="geometry" />
+        </mxCell>
+        <mxCell id="701" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontColor=#333333;" value="Outputs: CloudWatch Dashboard (real-time) | SNS Email (ARN list per threshold) | Athena View (for QuickSight/BI) | Raw S3 JSON (custom integrations)" vertex="1">
+          <mxGeometry height="30" width="700" x="30" y="742" as="geometry" />
+        </mxCell>
+        <mxCell id="f7SOhbhgg9QG3ltMntwy-702" parent="1" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;image=data:image/png,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;" value="" vertex="1">
+          <mxGeometry height="62" width="63.4" x="-23.4" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="f7SOhbhgg9QG3ltMntwy-707" parent="1" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=default;verticalAlign=top;aspect=fixed;imageAspect=0;image=data:image/png,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;" value="" vertex="1">
+          <mxGeometry height="80" width="80" x="1200" y="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

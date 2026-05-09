@@ -1,0 +1,236 @@
+<mxfile host="app.diagrams.net" agent="draw.io" pages="2">
+  <diagram id="config-account-level" name="Option B: Account-Level Aggregator">
+    <mxGraphModel dx="1509" dy="834" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;arcSize=5;" value="" vertex="1">
+          <mxGeometry height="340" width="420" x="400" as="geometry" />
+        </mxCell>
+        <mxCell id="3" parent="1" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;" value="&lt;b&gt;Account 3 — Aggregator Account&lt;/b&gt;&lt;br&gt;(where you deploy the EOL Tracker stack)" vertex="1">
+          <mxGeometry height="40" width="300" x="460" as="geometry" />
+        </mxCell>
+        <mxCell id="4" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.config;labelBackgroundColor=none;sketch=0;fontStyle=1;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;labelPosition=center;verticalLabelPosition=top;align=center;verticalAlign=bottom;" value="AWS Config Aggregator" vertex="1">
+          <mxGeometry height="80" width="80" x="560" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=10;fontColor=#333333;" value="&lt;font face=&quot;Courier New&quot; size=&quot;1&quot;&gt;aws configservice put-configuration-aggregator \&lt;br&gt;  --configuration-aggregator-name BedrockAggregator \&lt;br&gt;  --account-aggregation-sources \&lt;br&gt;  &#39;[{&quot;AccountIds&quot;:[&quot;ACCT1&quot;,&quot;ACCT2&quot;],&quot;AllAwsRegions&quot;:true}]&#39; \&lt;br&gt;  --region us-east-1&lt;/font&gt;" vertex="1">
+          <mxGeometry height="100" width="375" x="422.5" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="6" parent="1" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=1;fontSize=10;" value="Step 1: Create aggregator" vertex="1">
+          <mxGeometry height="30" width="140" x="420" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="10" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;arcSize=5;" value="" vertex="1">
+          <mxGeometry height="170" width="500" x="50" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="11" parent="1" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;" value="&lt;b&gt;Linked Account 1 (Source)&lt;/b&gt;" vertex="1">
+          <mxGeometry height="30" width="180" x="200" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="12" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.config;labelBackgroundColor=none;sketch=0;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" value="AWS Config (enabled)" vertex="1">
+          <mxGeometry height="50" width="50" x="100" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="13" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;labelBackgroundColor=none;sketch=0;fillColor=#01A88D;strokeColor=none;fontColor=#232F3E;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" value="Inference Profiles" vertex="1">
+          <mxGeometry height="50" width="50" x="410" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="14" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;labelBackgroundColor=none;sketch=0;fillColor=#01A88D;strokeColor=none;fontColor=#232F3E;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" value="KnowledgeBases" vertex="1">
+          <mxGeometry height="50" width="50" x="410" y="510" as="geometry" />
+        </mxCell>
+        <mxCell id="15" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" value="&lt;font face=&quot;Courier New&quot; size=&quot;1&quot;&gt;# Run in Account 1 (each region with Config enabled)&lt;br&gt;aws configservice put-aggregation-authorization \&lt;br&gt;  --authorized-account-id &lt;b&gt;ACCOUNT_3_ID&lt;/b&gt; \&lt;br&gt;  --authorized-aws-region &lt;b&gt;us-east-1&lt;/b&gt; \&lt;br&gt;  --region $region&lt;/font&gt;" vertex="1">
+          <mxGeometry height="90" width="340" x="50" y="705" as="geometry" />
+        </mxCell>
+        <mxCell id="16" parent="1" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=1;fontSize=10;" value="Step 3: Authorize aggregator (run per region)" vertex="1">
+          <mxGeometry height="30" width="220" x="50" y="680" as="geometry" />
+        </mxCell>
+        <mxCell id="17" parent="1" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=1;fontSize=10;" value="Step 2: Enable Config" vertex="1">
+          <mxGeometry height="30" width="120" x="50" y="600" as="geometry" />
+        </mxCell>
+        <mxCell id="18" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;" value="&lt;font face=&quot;Courier New&quot; size=&quot;1&quot;&gt;aws configservice put-configuration-recorder \&lt;br&gt;  --configuration-recorder name=default,roleARN=arn:aws:iam::ACCT1:role/...&lt;br&gt;  --region $region&lt;/font&gt;" vertex="1">
+          <mxGeometry height="50" width="480" x="50" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="20" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;arcSize=5;" value="" vertex="1">
+          <mxGeometry height="170" width="490" x="650" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="21" parent="1" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;" value="&lt;b&gt;Linked Account 2 (Source)&lt;/b&gt;" vertex="1">
+          <mxGeometry height="30" width="180" x="790" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="25" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=10;fontColor=#333333;" value="&lt;font face=&quot;Courier New&quot; size=&quot;1&quot;&gt;# Run in Account 2 (each region with Config enabled)&lt;br&gt;aws configservice put-aggregation-authorization \&lt;br&gt;  --authorized-account-id &lt;b&gt;ACCOUNT_3_ID&lt;/b&gt; \&lt;br&gt;  --authorized-aws-region &lt;b&gt;us-east-1&lt;/b&gt; \&lt;br&gt;  --region $region&lt;/font&gt;" vertex="1">
+          <mxGeometry height="90" width="337.5" x="650" y="705" as="geometry" />
+        </mxCell>
+        <mxCell id="26" parent="1" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=1;fontSize=10;" value="Step 3: Authorize aggregator (run per region)" vertex="1">
+          <mxGeometry height="30" width="220" x="650" y="680" as="geometry" />
+        </mxCell>
+        <mxCell id="30" edge="1" parent="1" source="4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeWidth=2;strokeColor=#6c8ebf;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="390" />
+              <mxPoint x="290" y="390" />
+            </Array>
+            <mxPoint x="290" y="420" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="31" connectable="0" parent="30" style="edgeLabel;html=1;align=center;verticalAlign=bottom;resizable=0;points=[];fontStyle=2;labelPosition=center;verticalLabelPosition=top;" value="Reads Config data" vertex="1">
+          <mxGeometry relative="1" x="-0.3" as="geometry" />
+        </mxCell>
+        <mxCell id="32" edge="1" parent="1" source="4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeWidth=2;strokeColor=#6c8ebf;" target="20">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="390" />
+              <mxPoint x="880" y="390" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="33" connectable="0" parent="32" style="edgeLabel;html=1;align=center;verticalAlign=bottom;resizable=0;points=[];fontStyle=2;labelPosition=center;verticalLabelPosition=top;" value="Reads Config data" vertex="1">
+          <mxGeometry relative="1" x="-0.3" as="geometry" />
+        </mxCell>
+        <mxCell id="50" parent="1" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=2;fontColor=#AE4132;" value="⚠️ Each source account must explicitly authorize the aggregator.&lt;br&gt;Authorization is per-region. --authorized-aws-region = where aggregator lives (not source region)." vertex="1">
+          <mxGeometry height="40" width="560" x="295" y="830" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-57" parent="1" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=1;fontSize=10;" value="Step 2: Enable Config" vertex="1">
+          <mxGeometry height="30" width="120" x="657.5" y="600" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-58" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=10;fontColor=#333333;" value="&lt;font face=&quot;Courier New&quot; size=&quot;1&quot;&gt;aws configservice put-configuration-recorder \&lt;br&gt;  --configuration-recorder name=default,roleARN=arn:aws:iam::ACCT1:role/...&lt;br&gt;  --region $region&lt;/font&gt;" vertex="1">
+          <mxGeometry height="50" width="480" x="652.5" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-61" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=10;fontColor=#333333;" value="&lt;font face=&quot;Courier New&quot; size=&quot;1&quot;&gt;# Step 4: Verify (run in Account 3)&lt;br&gt;aws configservice describe-configuration-aggregator-sources-status \&lt;br&gt;  --configuration-aggregator-name BedrockAggregator \&lt;br&gt;  --region us-east-1 --output table&lt;/font&gt;" vertex="1">
+          <mxGeometry height="70" width="425" x="855" y="260" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-62" parent="1" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=1;fontSize=10;" value="Step 4: Verify data is flowing" vertex="1">
+          <mxGeometry height="20" width="170" x="855" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-63" edge="1" parent="1" source="13" style="endArrow=classic;startArrow=classic;html=1;rounded=0;exitX=0.005;exitY=0.598;exitDx=0;exitDy=0;exitPerimeter=0;entryX=1.022;entryY=0.348;entryDx=0;entryDy=0;entryPerimeter=0;" target="12" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="290" y="560" as="sourcePoint" />
+            <mxPoint x="340" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-64" edge="1" parent="1" source="14" style="endArrow=classic;startArrow=classic;html=1;rounded=0;exitX=0.038;exitY=0.473;exitDx=0;exitDy=0;exitPerimeter=0;entryX=1.022;entryY=0.348;entryDx=0;entryDy=0;entryPerimeter=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="410" y="473" as="sourcePoint" />
+            <mxPoint x="151" y="500" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-65" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.config;labelBackgroundColor=none;sketch=0;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" value="AWS Config (enabled)" vertex="1">
+          <mxGeometry height="50" width="50" x="710" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-66" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;labelBackgroundColor=none;sketch=0;fillColor=#01A88D;strokeColor=none;fontColor=#232F3E;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" value="Inference Profiles" vertex="1">
+          <mxGeometry height="50" width="50" x="1020" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-67" parent="1" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;labelBackgroundColor=none;sketch=0;fillColor=#01A88D;strokeColor=none;fontColor=#232F3E;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;" value="KnowledgeBases" vertex="1">
+          <mxGeometry height="50" width="50" x="1020" y="510" as="geometry" />
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-68" edge="1" parent="1" source="JTSYDdjLCOKFlfB99DM6-66" style="endArrow=classic;startArrow=classic;html=1;rounded=0;exitX=0.005;exitY=0.598;exitDx=0;exitDy=0;exitPerimeter=0;entryX=1.022;entryY=0.348;entryDx=0;entryDy=0;entryPerimeter=0;" target="JTSYDdjLCOKFlfB99DM6-65" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="900" y="560" as="sourcePoint" />
+            <mxPoint x="950" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-69" edge="1" parent="1" source="JTSYDdjLCOKFlfB99DM6-67" style="endArrow=classic;startArrow=classic;html=1;rounded=0;exitX=0.038;exitY=0.473;exitDx=0;exitDy=0;exitPerimeter=0;entryX=1.022;entryY=0.348;entryDx=0;entryDy=0;entryPerimeter=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="1020" y="473" as="sourcePoint" />
+            <mxPoint x="761" y="500" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-70" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;strokeWidth=2;strokeColor=#6c8ebf;exitX=1.019;exitY=0.566;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.007;entryY=0.655;entryDx=0;entryDy=0;entryPerimeter=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="647" y="292" />
+              <mxPoint x="855" y="292" />
+            </Array>
+            <mxPoint x="638.3199999999999" y="292.34999999999997" as="sourcePoint" />
+            <mxPoint x="854.9849999999999" y="292.92" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="JTSYDdjLCOKFlfB99DM6-71" connectable="0" parent="JTSYDdjLCOKFlfB99DM6-70" style="edgeLabel;html=1;align=center;verticalAlign=bottom;resizable=0;points=[];fontStyle=2;labelPosition=center;verticalLabelPosition=top;" value="Verify Setup" vertex="1">
+          <mxGeometry relative="1" x="-0.3" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="config-org-level" name="Option A: Organization-Level Aggregator">
+    <mxGraphModel dx="1422" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="750" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <!-- Payer/Management Account -->
+        <mxCell id="2" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;arcSize=5;" vertex="1" parent="1">
+          <mxGeometry x="250" y="20" width="700" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="&lt;b&gt;Payer / Management Account&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="30" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="&lt;b&gt;AWS Config&lt;br&gt;Organization&lt;br&gt;Aggregator&lt;/b&gt;" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.config;labelBackgroundColor=none;sketch=0;fontStyle=1;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="400" y="70" width="80" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="5" value="&lt;b&gt;AWS Organizations&lt;/b&gt;" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.organizations;labelBackgroundColor=none;sketch=0;fontStyle=1;fillColor=#E7157B;strokeColor=none;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="570" y="70" width="60" height="60" as="geometry" />
+        </mxCell>
+        <!-- Command box -->
+        <mxCell id="6" value="&lt;font face=&quot;Courier New&quot; size=&quot;1&quot;&gt;aws configservice put-configuration-aggregator \&lt;br&gt;  --configuration-aggregator-name BedrockAggregator \&lt;br&gt;  --organization-aggregation-source \&lt;br&gt;  &#39;{&quot;RoleArn&quot;:&quot;arn:aws:iam::MGMT_ACCT:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig&quot;,&quot;AllAwsRegions&quot;:true}&#39; \&lt;br&gt;  --region us-east-1&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=10;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="280" y="170" width="640" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="7" value="Single command — that&#39;s it!" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="280" y="155" width="160" height="20" as="geometry" />
+        </mxCell>
+        <!-- Linked Accounts -->
+        <mxCell id="10" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;arcSize=5;" vertex="1" parent="1">
+          <mxGeometry x="30" y="400" width="250" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="11" value="&lt;b&gt;Account 1 (Linked)&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;" vertex="1" parent="1">
+          <mxGeometry x="85" y="410" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="12" value="Bedrock Resources" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;labelBackgroundColor=none;sketch=0;fillColor=#01A88D;strokeColor=none;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="130" y="460" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="20" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;arcSize=5;" vertex="1" parent="1">
+          <mxGeometry x="330" y="400" width="250" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="21" value="&lt;b&gt;Account 2 (Linked)&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;" vertex="1" parent="1">
+          <mxGeometry x="385" y="410" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="22" value="Bedrock Resources" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;labelBackgroundColor=none;sketch=0;fillColor=#01A88D;strokeColor=none;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="430" y="460" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="30" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;arcSize=5;" vertex="1" parent="1">
+          <mxGeometry x="630" y="400" width="250" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="31" value="&lt;b&gt;Account N (Linked)&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=top;resizable=0;points=[];autosize=1;" vertex="1" parent="1">
+          <mxGeometry x="685" y="410" width="140" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="32" value="Bedrock Resources" style="shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;labelBackgroundColor=none;sketch=0;fillColor=#01A88D;strokeColor=none;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="730" y="460" width="50" height="50" as="geometry" />
+        </mxCell>
+        <!-- Arrows -->
+        <mxCell id="40" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="1" source="4" target="10">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="440" y="340" />
+              <mxPoint x="155" y="340" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="41" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="1" source="4" target="20">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="440" y="340" />
+              <mxPoint x="455" y="340" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="42" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="1" source="4" target="30">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="440" y="340" />
+              <mxPoint x="755" y="340" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="43" value="Automatic access&lt;br&gt;(no authorization needed)" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontStyle=2;fontColor=#2D7600;" vertex="1" connectable="0" parent="41">
+          <mxGeometry x="0.5" relative="1" as="geometry" />
+        </mxCell>
+        <!-- Note -->
+        <mxCell id="50" value="✅ No per-account authorization needed. Organization aggregator automatically&lt;br&gt;has access to all member accounts. Just pick accounts from the list or use AllAwsRegions:true." style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;fontStyle=2;fontColor=#2D7600;" vertex="1" parent="1">
+          <mxGeometry x="200" y="600" width="560" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,2000 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Bedrock EOL Tracker - Hybrid parsing with data expansion for model lifecycle and AWS Config resources'
+
+Parameters:
+  AggregatorName:
+    Type: String
+    Description: 'Name of the AWS Config Aggregator'
+  ConfigAggregatorRegion:
+    Type: String
+    Description: 'Region where the Config Aggregator exists'
+    Default: 'us-east-1'
+  S3BucketName:
+    Type: String
+    Description: 'Name of the S3 bucket to store the data'
+  AthenaWorkGroup:
+    Type: String
+    Description: 'Athena Workgroup to use'
+    Default: 'primary'
+  AthenaDatabase:
+    Type: String
+    Description: 'Athena Database to use'
+    Default: 'default'
+  AthenaResultsBucket:
+    Type: String
+    Description: 'S3 bucket for Athena query results (leave empty to use the main data bucket)'
+    Default: ''
+  ExecutionFrequencyHours:
+    Type: Number
+    Description: 'Frequency of BedrockEOLDataProcessor execution in hours. Max 168.'
+    Default: 24
+    MinValue: 1
+    MaxValue: 168
+  NotificationEmail:
+    Type: String
+    Description: 'Email for EOL alert notifications (leave empty to skip alerts)'
+    Default: ''
+  AlertThresholdDays:
+    Type: String
+    Description: 'Alert when resources have EOL within this many days'
+    AllowedValues:
+      - '30'
+      - '60'
+      - '180'
+    Default: '30'
+
+Conditions:
+  UseMainBucketForAthenaResults: !Equals 
+    - !Ref AthenaResultsBucket
+    - ''
+  HasNotificationEmail: !Not
+    - !Equals
+      - !Ref NotificationEmail
+      - ''
+
+Resources:
+  # ============================================
+  # Check Athena Tables Function
+  # ============================================
+  BedrockCheckAthenaTablesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock_CheckAthenaTables
+      Handler: index.handler
+      Role: !GetAtt BedrockCheckAthenaTablesRole.Arn
+      Runtime: python3.11
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          
+          def handler(event, context):
+              athena = boto3.client('athena')
+              database = event.get('AthenaDatabase', os.environ.get('ATHENA_DATABASE'))
+              
+              if not database:
+                  raise ValueError("AthenaDatabase not provided")
+              
+              tables = [
+                  'bedrock_active_models',
+                  'bedrock_legacy_models',
+                  'bedrock_eol_models',
+                  'bedrock_inference_profiles',
+                  'bedrock_knowledge_bases',
+                  'bedrock_model_reference'
+              ]
+              
+              try:
+                  for table in tables:
+                      athena.get_table_metadata(
+                          CatalogName='AwsDataCatalog',
+                          DatabaseName=database,
+                          TableName=table
+                      )
+                  return {'tablesExist': True}
+              except Exception as e:
+                  print(f"Table check failed: {str(e)}")
+                  return {'tablesExist': False}
+
+  BedrockCheckAthenaTablesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockCheckAthenaTablesPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:GetTableMetadata
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # ============================================
+  # Athena Table Creator Function
+  # ============================================
+  BedrockAthenaTableCreatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock_AthenaTableCreator
+      Handler: index.handler
+      Role: !GetAtt BedrockAthenaTableCreatorRole.Arn
+      Runtime: python3.11
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import time
+
+          def execute_query(athena_client, query, database, workgroup, output_location):
+              response = athena_client.start_query_execution(
+                  QueryString=query,
+                  QueryExecutionContext={'Database': database},
+                  WorkGroup=workgroup,
+                  ResultConfiguration={'OutputLocation': output_location}
+              )
+              query_execution_id = response['QueryExecutionId']
+              
+              while True:
+                  result = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+                  status = result['QueryExecution']['Status']['State']
+                  if status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
+                      break
+                  time.sleep(2)
+              
+              if status != 'SUCCEEDED':
+                  reason = result['QueryExecution']['Status'].get('StateChangeReason', 'Unknown')
+                  raise Exception(f"Query failed: {status}, reason: {reason}")
+
+          def handler(event, context):
+              athena = boto3.client('athena')
+              s3_bucket = event['S3BucketName']
+              database = event['AthenaDatabase']
+              workgroup = event['AthenaWorkGroup']
+              
+              results_bucket = event.get('AthenaResultsBucket')
+              if not results_bucket or results_bucket.strip() == '':
+                  results_bucket = s3_bucket
+              
+              output_location = f"s3://{results_bucket}/athena-results/"
+              
+              print(f"S3 Data Bucket: {s3_bucket}")
+              print(f"Athena Results Bucket: {results_bucket}")
+              print(f"Database: {database}")
+
+              queries = [
+                  f"""
+                  CREATE EXTERNAL TABLE IF NOT EXISTS `{database}`.`bedrock_active_models` (
+                    `provider` string,
+                    `model_name` string,
+                    `model_id` string,
+                    `regions_supported` string,
+                    `launch_date` string,
+                    `eol_date` string,
+                    `input_modalities` string,
+                    `output_modalities` string,
+                    `collected_at` string
+                  )
+                  ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+                  LOCATION 's3://{s3_bucket}/bedrock-active-models/'
+                  """,
+                  
+                  f"""
+                  CREATE EXTERNAL TABLE IF NOT EXISTS `{database}`.`bedrock_legacy_models` (
+                    `model_name` string,
+                    `legacy_date` string,
+                    `legacy_region` string,
+                    `public_extended_access_date` string,
+                    `public_extended_access_region` string,
+                    `eol_date` string,
+                    `eol_region` string,
+                    `recommended_replacement` string,
+                    `recommended_model_id` string,
+                    `collected_at` string
+                  )
+                  ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+                  LOCATION 's3://{s3_bucket}/bedrock-legacy-models/'
+                  """,
+                  
+                  f"""
+                  CREATE EXTERNAL TABLE IF NOT EXISTS `{database}`.`bedrock_eol_models` (
+                    `model_name` string,
+                    `legacy_date` string,
+                    `legacy_region` string,
+                    `eol_date` string,
+                    `eol_region` string,
+                    `recommended_replacement` string,
+                    `recommended_model_id` string,
+                    `collected_at` string
+                  )
+                  ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+                  LOCATION 's3://{s3_bucket}/bedrock-eol-models/'
+                  """,
+                  
+                  f"""
+                  CREATE EXTERNAL TABLE IF NOT EXISTS `{database}`.`bedrock_inference_profiles` (
+                    `resource_id` string,
+                    `resource_name` string,
+                    `resource_arn` string,
+                    `source_account_id` string,
+                    `source_region` string,
+                    `status` string,
+                    `inference_profile_type` string,
+                    `model_arn` string,
+                    `is_multi_model` string,
+                    `tags` string,
+                    `configuration` string,
+                    `created_at` string,
+                    `updated_at` string,
+                    `collected_at` string
+                  )
+                  ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+                  LOCATION 's3://{s3_bucket}/bedrock-inference-profiles/'
+                  """,
+                  
+                  f"""
+                  CREATE EXTERNAL TABLE IF NOT EXISTS `{database}`.`bedrock_knowledge_bases` (
+                    `resource_id` string,
+                    `resource_name` string,
+                    `resource_arn` string,
+                    `source_account_id` string,
+                    `source_region` string,
+                    `status` string,
+                    `knowledge_base_type` string,
+                    `embedding_model_arn` string,
+                    `is_multi_model` string,
+                    `storage_type` string,
+                    `tags` string,
+                    `configuration` string,
+                    `created_at` string,
+                    `updated_at` string,
+                    `collected_at` string
+                  )
+                  ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+                  LOCATION 's3://{s3_bucket}/bedrock-knowledge-bases/'
+                  """,
+                  
+                  f"""
+                  CREATE EXTERNAL TABLE IF NOT EXISTS `{database}`.`bedrock_model_reference` (
+                    `model_name` string,
+                    `model_id` string,
+                    `model_arn` string,
+                    `provider_name` string,
+                    `input_modalities` string,
+                    `output_modalities` string,
+                    `response_streaming_supported` string,
+                    `customizations_supported` string,
+                    `inference_types_supported` string,
+                    `model_lifecycle_status` string,
+                    `collected_at` string
+                  )
+                  ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
+                  LOCATION 's3://{s3_bucket}/bedrock-model-reference/'
+                  """
+              ]
+
+              for query in queries:
+                  print(f"Creating table: {query.split('`')[3]}")
+                  execute_query(athena, query, database, workgroup, output_location)
+                  print("Success")
+
+              return {'statusCode': 200, 'body': 'Tables created'}
+
+  # ============================================
+  # FIXED: Athena Table Creator Role with proper S3 permissions
+  # ============================================
+  BedrockAthenaTableCreatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockAthenaTableCreatorPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - glue:CreateDatabase
+                  - glue:GetDatabase
+                  - glue:CreateTable
+                  - glue:DeleteTable
+                  - glue:UpdateTable
+                  - glue:GetTable
+                  - glue:GetTables
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+              - !If
+                - UseMainBucketForAthenaResults
+                - !Ref 'AWS::NoValue'
+                - Effect: Allow
+                  Action:
+                    - s3:GetBucketLocation
+                    - s3:GetObject
+                    - s3:ListBucket
+                    - s3:PutObject
+                  Resource:
+                    - !Sub 'arn:aws:s3:::${AthenaResultsBucket}'
+                    - !Sub 'arn:aws:s3:::${AthenaResultsBucket}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # ============================================
+  # State Machine for Table Creation
+  # ============================================
+  BedrockAthenaTableCreationStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+     - BedrockCheckAthenaTablesFunction
+     - BedrockAthenaTableCreatorFunction
+     - EOLMetricsFunction
+    Properties:
+      StateMachineName: bedrock_AthenaTableCreationStateMachine
+      DefinitionString: !Sub
+        - |-
+          {
+            "Comment": "Creates Bedrock Athena tables and publishes CloudWatch metrics",
+            "StartAt": "CheckAthenaTablesExist",
+            "States": {
+              "CheckAthenaTablesExist": {
+                "Type": "Task",
+                "Resource": "${CheckAthenaTablesLambdaArn}",
+                "Next": "TablesExist?",
+                "ResultPath": "$.checkResult",
+                "Retry": [{"ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2}]
+              },
+              "TablesExist?": {
+                "Type": "Choice",
+                "Choices": [{"Variable": "$.checkResult.tablesExist", "BooleanEquals": true, "Next": "PublishMetrics"}],
+                "Default": "CreateAthenaTables"
+              },
+              "CreateAthenaTables": {
+                "Type": "Task",
+                "Resource": "${AthenaTableCreatorFunctionArn}",
+                "Next": "PublishMetrics",
+                "Retry": [{"ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2}]
+              },
+              "PublishMetrics": {
+                "Type": "Task",
+                "Resource": "${EOLMetricsFunctionArn}",
+                "Next": "Success",
+                "Retry": [{"ErrorEquals": ["States.ALL"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2}]
+              },
+              "Success": {"Type": "Succeed"}
+            }
+          }
+        - CheckAthenaTablesLambdaArn: !GetAtt BedrockCheckAthenaTablesFunction.Arn
+          AthenaTableCreatorFunctionArn: !GetAtt BedrockAthenaTableCreatorFunction.Arn
+          EOLMetricsFunctionArn: !GetAtt EOLMetricsFunction.Arn
+      RoleArn: !GetAtt BedrockStepFunctionsExecutionRole.Arn
+
+  BedrockStepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockStepFunctionsExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt BedrockCheckAthenaTablesFunction.Arn
+                  - !GetAtt BedrockAthenaTableCreatorFunction.Arn
+                  - !GetAtt EOLMetricsFunction.Arn
+
+  # ============================================
+  # Main EOL Data Processor Lambda with Data Expansion
+  # ============================================
+  BedrockEOLDataLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock_EOLDataProcessor
+      Handler: index.lambda_handler
+      Role: !GetAtt BedrockEOLDataLambdaRole.Arn
+      Runtime: python3.11
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          AGGREGATOR_NAME: !Ref AggregatorName
+          CONFIG_AGGREGATOR_REGION: !Ref ConfigAggregatorRegion
+          S3_BUCKET_NAME: !Ref S3BucketName
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_WORK_GROUP: !Ref AthenaWorkGroup
+          ATHENA_RESULTS_BUCKET: !If 
+            - UseMainBucketForAthenaResults
+            - !Ref S3BucketName
+            - !Ref AthenaResultsBucket
+          STATE_MACHINE_ARN: !Ref BedrockAthenaTableCreationStateMachine
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.request
+          import re
+          import os
+          from datetime import datetime
+          from botocore.exceptions import ClientError
+          from html.parser import HTMLParser
+
+          # ============================================
+          # Data Cleaning and Expansion Functions
+          # ============================================
+          def split_date_and_region(value):
+              if not value or value.strip() == '':
+                  return '', ''
+              match = re.match(r'^(.+?)\s*\(([^)]+)\)\s*$', value.strip())
+              if match:
+                  return match.group(1).strip(), match.group(2).strip()
+              return value.strip(), ''
+
+          def clean_region_text(value):
+              if not value:
+                  return value
+              cleaned = re.sub(r'\s*[Rr]egions?\s*$', '', value.strip())
+              cleaned = re.sub(r'\s+and\s+', ', ', cleaned)
+              cleaned = re.sub(r',\s*and\s+', ', ', cleaned)
+              cleaned = re.sub(r'\s*,\s*', ', ', cleaned)
+              cleaned = re.sub(r'\s+', ' ', cleaned)
+              return cleaned.strip()
+
+          def expand_regions_by_comma(regions_str):
+              if not regions_str:
+                  return ['']
+              regions_str = clean_region_text(regions_str)
+              regions = [r.strip() for r in regions_str.split(',') if r.strip()]
+              return regions if regions else ['']
+
+          def expand_eol_models(eol_models):
+              expanded = []
+              for model in eol_models:
+                  legacy_region = model.get('legacy_region', '')
+                  eol_region = model.get('eol_region', '')
+                  legacy_regions = expand_regions_by_comma(legacy_region)
+                  eol_regions = expand_regions_by_comma(eol_region)
+                  max_len = max(len(legacy_regions), len(eol_regions))
+                  for i in range(max_len):
+                      lr = legacy_regions[i] if i < len(legacy_regions) else legacy_regions[-1] if legacy_regions else ''
+                      er = eol_regions[i] if i < len(eol_regions) else eol_regions[-1] if eol_regions else ''
+                      expanded.append({
+                          'model_name': model.get('model_name', ''),
+                          'legacy_date': model.get('legacy_date', ''),
+                          'legacy_region': lr,
+                          'eol_date': model.get('eol_date', ''),
+                          'eol_region': er,
+                          'recommended_replacement': model.get('recommended_replacement', ''),
+                          'recommended_model_id': model.get('recommended_model_id', ''),
+                          'collected_at': model.get('collected_at', '')
+                      })
+              return expanded
+
+          def expand_legacy_models(legacy_models):
+              expanded = []
+              for model in legacy_models:
+                  legacy_region = model.get('legacy_region', '')
+                  extended_region = model.get('public_extended_access_region', '')
+                  eol_region = model.get('eol_region', '')
+                  legacy_regions = expand_regions_by_comma(legacy_region)
+                  extended_regions = expand_regions_by_comma(extended_region)
+                  eol_regions = expand_regions_by_comma(eol_region)
+                  max_len = max(len(legacy_regions), len(extended_regions), len(eol_regions))
+                  for i in range(max_len):
+                      lr = legacy_regions[i] if i < len(legacy_regions) else legacy_regions[-1] if legacy_regions else ''
+                      exr = extended_regions[i] if i < len(extended_regions) else extended_regions[-1] if extended_regions else ''
+                      er = eol_regions[i] if i < len(eol_regions) else eol_regions[-1] if eol_regions else ''
+                      expanded.append({
+                          'model_name': model.get('model_name', ''),
+                          'legacy_date': model.get('legacy_date', ''),
+                          'legacy_region': lr,
+                          'public_extended_access_date': model.get('public_extended_access_date', ''),
+                          'public_extended_access_region': exr,
+                          'eol_date': model.get('eol_date', ''),
+                          'eol_region': er,
+                          'recommended_replacement': model.get('recommended_replacement', ''),
+                          'recommended_model_id': model.get('recommended_model_id', ''),
+                          'collected_at': model.get('collected_at', '')
+                      })
+              return expanded
+
+          def clean_value_for_split(value):
+              if not value:
+                  return ''
+              return value.replace('*', '').strip()
+
+          def split_semicolon_values(value):
+              if not value:
+                  return []
+              cleaned = clean_value_for_split(value)
+              parts = [p.strip() for p in cleaned.split(';') if p.strip()]
+              return parts
+
+          def expand_active_models(active_models):
+              expanded = []
+              for model in active_models:
+                  regions_str = model.get('regions_supported', '')
+                  launch_str = model.get('launch_date', '')
+                  eol_str = model.get('eol_date', '')
+                  regions = split_semicolon_values(regions_str)
+                  launch_dates = split_semicolon_values(launch_str)
+                  eol_dates = split_semicolon_values(eol_str)
+                  if not regions:
+                      expanded.append({
+                          'provider': model.get('provider', ''),
+                          'model_name': model.get('model_name', ''),
+                          'model_id': model.get('model_id', ''),
+                          'regions_supported': clean_value_for_split(regions_str),
+                          'launch_date': clean_value_for_split(launch_str),
+                          'eol_date': clean_value_for_split(eol_str),
+                          'input_modalities': model.get('input_modalities', ''),
+                          'output_modalities': model.get('output_modalities', ''),
+                          'collected_at': model.get('collected_at', '')
+                      })
+                      continue
+                  for i, region in enumerate(regions):
+                      launch_date = launch_dates[i] if i < len(launch_dates) else (launch_dates[-1] if launch_dates else '')
+                      eol_date = eol_dates[i] if i < len(eol_dates) else (eol_dates[-1] if eol_dates else '')
+                      expanded.append({
+                          'provider': model.get('provider', ''),
+                          'model_name': model.get('model_name', ''),
+                          'model_id': model.get('model_id', ''),
+                          'regions_supported': region,
+                          'launch_date': launch_date,
+                          'eol_date': eol_date,
+                          'input_modalities': model.get('input_modalities', ''),
+                          'output_modalities': model.get('output_modalities', ''),
+                          'collected_at': model.get('collected_at', '')
+                      })
+              return expanded
+
+          def split_arns_by_comma(arns_str):
+              """Split comma-separated ARNs into list"""
+              if not arns_str:
+                  return []
+              arns = [a.strip() for a in arns_str.split(',') if a.strip()]
+              return arns
+
+          # ============================================
+          # S3 Helper Function
+          # ============================================
+          def update_s3_file(bucket_name, folder_name, file_name, data, account_number):
+              s3 = boto3.client('s3')
+              key = f"{folder_name}/{account_number}-{file_name}"
+              try:
+                  s3.put_object(Bucket=bucket_name, Key=key, Body=data.encode('UTF-8'))
+                  print(f"Wrote: s3://{bucket_name}/{key}")
+              except ClientError as e:
+                  print(f"Error writing {key}: {str(e)}")
+                  raise e
+
+          # ============================================
+          # HTML Parser Class
+          # ============================================
+          class TableParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.tables = []
+                  self.current_table = []
+                  self.current_row = []
+                  self.current_cell = []
+                  self.in_table = False
+                  self.in_row = False
+                  self.in_cell = False
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'table':
+                      self.in_table = True
+                      self.current_table = []
+                  elif tag == 'tr' and self.in_table:
+                      self.in_row = True
+                      self.current_row = []
+                  elif tag in ['td', 'th'] and self.in_row:
+                      self.in_cell = True
+                      self.current_cell = []
+                  elif tag == 'li' and self.in_cell:
+                      if self.current_cell:
+                          self.current_cell.append('; ')
+              def handle_endtag(self, tag):
+                  if tag == 'table' and self.in_table:
+                      self.in_table = False
+                      if self.current_table and len(self.current_table) > 1:
+                          self.tables.append(self.current_table)
+                  elif tag == 'tr' and self.in_row:
+                      self.in_row = False
+                      if self.current_row:
+                          self.current_table.append(self.current_row)
+                  elif tag in ['td', 'th'] and self.in_cell:
+                      self.in_cell = False
+                      cell_text = ''.join(self.current_cell).strip()
+                      cell_text = re.sub(r'\s+', ' ', cell_text)
+                      self.current_row.append(cell_text)
+              def handle_data(self, data):
+                  if self.in_cell:
+                      self.current_cell.append(data)
+
+          def identify_table_type(headers):
+              headers_lower = ' '.join([h.lower() for h in headers])
+              if 'legacy date' in headers_lower and 'eol' in headers_lower:
+                  return 'combined_legacy_eol'
+              if 'provider' in headers_lower and 'model id' in headers_lower and 'input modal' in headers_lower:
+                  return 'active'
+              if 'public extended access' in headers_lower or 'extended access' in headers_lower:
+                  return 'legacy'
+              if ('model version' in headers_lower or headers_lower.startswith('model')) and \
+                 ('eol' in headers_lower or 'end of life' in headers_lower) and \
+                 'public extended' not in headers_lower and 'extended access' not in headers_lower:
+                  return 'eol'
+              return None
+
+          def parse_html_standard(html_content, collected_at):
+              print("Attempting standard HTML parsing...")
+              parser = TableParser()
+              parser.feed(html_content)
+              active_models, legacy_models, eol_models = [], [], []
+              print(f"Found {len(parser.tables)} tables")
+              for table in parser.tables:
+                  if len(table) < 2:
+                      continue
+                  headers = table[0]
+                  table_type = identify_table_type(headers)
+                  if table_type:
+                      print(f"Table type: {table_type}, Rows: {len(table)-1}")
+                  if table_type == 'combined_legacy_eol':
+                      from datetime import datetime as dt
+                      today = dt.utcnow().date()
+                      for row in table[1:]:
+                          if len(row) >= 7:
+                              eol_str = row[5].strip()
+                              is_eol = False
+                              try:
+                                  eol_dt = dt.strptime(re.sub(r'\s+', ' ', eol_str), '%B %d, %Y').date()
+                                  is_eol = eol_dt < today
+                              except:
+                                  pass
+                              regions = row[3]
+                              ext_date = row[6].strip()
+                              if ext_date in ('-', '\u2014', '\u2013', ''):
+                                  ext_date = ''
+                              if is_eol:
+                                  eol_models.append({
+                                      'model_name': row[1], 'legacy_date': row[4], 'legacy_region': regions,
+                                      'eol_date': eol_str, 'eol_region': regions,
+                                      'recommended_replacement': '', 'recommended_model_id': row[2], 'collected_at': collected_at
+                                  })
+                              else:
+                                  legacy_models.append({
+                                      'model_name': row[1], 'legacy_date': row[4], 'legacy_region': regions,
+                                      'public_extended_access_date': ext_date, 'public_extended_access_region': regions,
+                                      'eol_date': eol_str, 'eol_region': regions,
+                                      'recommended_replacement': '', 'recommended_model_id': row[2], 'collected_at': collected_at
+                                  })
+                  elif table_type == 'active':
+                      for row in table[1:]:
+                          if len(row) >= 8:
+                              active_models.append({
+                                  'provider': row[0], 'model_name': row[1], 'model_id': row[2],
+                                  'regions_supported': row[3], 'launch_date': row[4], 'eol_date': row[5],
+                                  'input_modalities': row[6], 'output_modalities': row[7], 'collected_at': collected_at
+                              })
+                  elif table_type == 'legacy':
+                      for row in table[1:]:
+                          if len(row) >= 6:
+                              ld, lr = split_date_and_region(row[1])
+                              ed, er = split_date_and_region(row[2])
+                              eold, eolr = split_date_and_region(row[3])
+                              legacy_models.append({
+                                  'model_name': row[0], 'legacy_date': ld, 'legacy_region': lr,
+                                  'public_extended_access_date': ed, 'public_extended_access_region': er,
+                                  'eol_date': eold, 'eol_region': eolr,
+                                  'recommended_replacement': row[4], 'recommended_model_id': row[5], 'collected_at': collected_at
+                              })
+                  elif table_type == 'eol':
+                      for row in table[1:]:
+                          if len(row) >= 5:
+                              ld, lr = split_date_and_region(row[1])
+                              eold, eolr = split_date_and_region(row[2])
+                              eol_models.append({
+                                  'model_name': row[0], 'legacy_date': ld, 'legacy_region': lr,
+                                  'eol_date': eold, 'eol_region': eolr,
+                                  'recommended_replacement': row[3], 'recommended_model_id': row[4], 'collected_at': collected_at
+                              })
+              print(f"Standard parsing: {len(active_models)} active, {len(legacy_models)} legacy, {len(eol_models)} EOL")
+              return active_models, legacy_models, eol_models
+
+          def clean_html_for_ai(html_content):
+              content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL)
+              content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL)
+              content = re.sub(r'<nav[^>]*>.*?</nav>', '', content, flags=re.DOTALL)
+              content = re.sub(r'<header[^>]*>.*?</header>', '', content, flags=re.DOTALL)
+              content = re.sub(r'<footer[^>]*>.*?</footer>', '', content, flags=re.DOTALL)
+              content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
+              main_start = content.find('<div id="main-content"')
+              if main_start > 0:
+                  content = content[main_start:]
+              return content[:80000] if len(content) > 80000 else content
+
+          def parse_html_with_ai(html_content, collected_at):
+              print("Attempting AI parsing with Bedrock Claude...")
+              bedrock = boto3.client('bedrock-runtime')
+              content = clean_html_for_ai(html_content)
+              print(f"Cleaned HTML size for AI: {len(content)} bytes")
+              prompt = f"""Extract ALL model data from this Amazon Bedrock model lifecycle HTML page.
+
+          The page has ONE table with these columns:
+          Model provider | Model name | Model ID | Regions | Legacy date | EOL date | Public extended access start date
+
+          IMPORTANT:
+          - Some models have MULTIPLE rows for different region groups (same model, different regions with different dates). Include each row separately.
+          - The "Regions" column contains comma-separated AWS region names.
+          - Active models are NOT on this page. Do NOT invent active model data.
+          - A dash or em-dash in "Public extended access start date" means no date set.
+          - Extract every single row from the table. Do not skip any.
+
+          Classify each row:
+          - If the EOL date is in the PAST (before today {collected_at[:10]}), classify as "eol"
+          - If the EOL date is in the FUTURE or today, classify as "legacy"
+
+          Return ONLY valid JSON with no other text:
+          {{"legacy_models": [{{"model_provider":"","model_name":"","model_id":"","regions":"","legacy_date":"","eol_date":"","public_extended_access_date":""}}],
+          "eol_models": [{{"model_provider":"","model_name":"","model_id":"","regions":"","legacy_date":"","eol_date":"","public_extended_access_date":""}}]}}
+
+          HTML:
+          {content}"""
+              try:
+                  response = bedrock.invoke_model(
+                      modelId='us.anthropic.claude-haiku-4-5-20251001-v1:0',
+                      contentType='application/json', accept='application/json',
+                      body=json.dumps({'anthropic_version': 'bedrock-2023-05-31', 'max_tokens': 100000, 'messages': [{'role': 'user', 'content': prompt}]})
+                  )
+                  response_body = json.loads(response['body'].read())
+                  result_text = response_body['content'][0]['text']
+                  json_match = re.search(r'\{[\s\S]*\}', result_text)
+                  if json_match:
+                      result = json.loads(json_match.group())
+                      active_models = []
+                      legacy_models = []
+                      for m in result.get('legacy_models', []):
+                          regions = m.get('regions', '')
+                          ext_date = m.get('public_extended_access_date', '')
+                          if ext_date in ('', '-', '\u2014', '\u2013'):
+                              ext_date = ''
+                          for region in expand_regions_by_comma(regions):
+                              legacy_models.append({
+                                  'model_name': m.get('model_name', ''),
+                                  'legacy_date': m.get('legacy_date', ''),
+                                  'legacy_region': region,
+                                  'public_extended_access_date': ext_date,
+                                  'public_extended_access_region': region,
+                                  'eol_date': m.get('eol_date', ''),
+                                  'eol_region': region,
+                                  'recommended_replacement': '',
+                                  'recommended_model_id': m.get('model_id', ''),
+                                  'collected_at': collected_at
+                              })
+                      eol_models = []
+                      for m in result.get('eol_models', []):
+                          regions = m.get('regions', '')
+                          for region in expand_regions_by_comma(regions):
+                              eol_models.append({
+                                  'model_name': m.get('model_name', ''),
+                                  'legacy_date': m.get('legacy_date', ''),
+                                  'legacy_region': region,
+                                  'eol_date': m.get('eol_date', ''),
+                                  'eol_region': region,
+                                  'recommended_replacement': '',
+                                  'recommended_model_id': m.get('model_id', ''),
+                                  'collected_at': collected_at
+                              })
+                      print(f"AI parsing: {len(active_models)} active, {len(legacy_models)} legacy, {len(eol_models)} EOL")
+                      return active_models, legacy_models, eol_models
+              except Exception as e:
+                  print(f"AI parsing error: {str(e)}")
+              return [], [], []
+
+          def parse_model_lifecycle_html():
+              url = 'https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle.html'
+              collected_at = datetime.utcnow().isoformat() + 'Z'
+              try:
+                  print(f"Fetching HTML from: {url}")
+                  req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      html_content = response.read().decode('utf-8')
+                  print(f"HTML size: {len(html_content)} bytes")
+                  active, legacy, eol = parse_html_standard(html_content, collected_at)
+                  if len(legacy) > 0 or len(eol) > 0:
+                      print("Standard parsing successful!")
+                      return active, legacy, eol
+                  print("Standard parsing found no legacy/eol models, falling back to AI parsing...")
+                  ai_active, ai_legacy, ai_eol = parse_html_with_ai(html_content, collected_at)
+                  return (ai_active if len(ai_active) > len(active) else active,
+                          ai_legacy if len(ai_legacy) > len(legacy) else legacy,
+                          ai_eol if len(ai_eol) > len(eol) else eol)
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return [], [], []
+
+          def normalize_model_name(name):
+              if not name:
+                  return ''
+              return ' '.join(name.strip().split()).lower()
+
+          def get_foundation_models_from_bedrock():
+              bedrock = boto3.client('bedrock')
+              models = []
+              print("Fetching foundation models from Bedrock API...")
+              try:
+                  response = bedrock.list_foundation_models()
+                  for model in response.get('modelSummaries', []):
+                      models.append({
+                          'model_id': model.get('modelId', ''), 'model_arn': model.get('modelArn', ''),
+                          'model_name': model.get('modelName', ''), 'provider_name': model.get('providerName', ''),
+                          'input_modalities': ', '.join(model.get('inputModalities', [])),
+                          'output_modalities': ', '.join(model.get('outputModalities', [])),
+                          'response_streaming_supported': str(model.get('responseStreamingSupported', False)),
+                          'customizations_supported': ', '.join(model.get('customizationsSupported', [])),
+                          'inference_types_supported': ', '.join(model.get('inferenceTypesSupported', [])),
+                          'model_lifecycle_status': model.get('modelLifecycle', {}).get('status', '')
+                      })
+                  print(f"Found {len(models)} foundation models")
+              except Exception as e:
+                  print(f"Error fetching foundation models: {str(e)}")
+              return models
+
+          def build_model_reference(active_models, legacy_models, eol_models, collected_at):
+              print("Building model reference table...")
+              model_names_set = set()
+              for model in active_models:
+                  if model.get('model_name', '').strip():
+                      model_names_set.add(model['model_name'].strip())
+              for model in legacy_models:
+                  if model.get('model_name', '').strip():
+                      model_names_set.add(model['model_name'].strip())
+              for model in eol_models:
+                  if model.get('model_name', '').strip():
+                      model_names_set.add(model['model_name'].strip())
+              print(f"Unique model names from parsed HTML: {len(model_names_set)}")
+              foundation_models = get_foundation_models_from_bedrock()
+              bedrock_model_lookup = {}
+              for fm in foundation_models:
+                  normalized = normalize_model_name(fm['model_name'])
+                  if normalized:
+                      bedrock_model_lookup[normalized] = fm
+              model_id_lookup = {}
+              for fm in foundation_models:
+                  model_id = fm.get('model_id', '')
+                  if model_id:
+                      base_name = model_id.split('.')[-1] if '.' in model_id else model_id
+                      base_name = base_name.replace('-', ' ').replace('_', ' ').lower()
+                      model_id_lookup[base_name] = fm
+              reference_records = []
+              matched_count = 0
+              for model_name in sorted(model_names_set):
+                  normalized = normalize_model_name(model_name)
+                  fm = bedrock_model_lookup.get(normalized)
+                  if not fm:
+                      for bedrock_name, bedrock_fm in bedrock_model_lookup.items():
+                          if normalized in bedrock_name or bedrock_name in normalized:
+                              fm = bedrock_fm
+                              break
+                  if not fm:
+                      for id_pattern, id_fm in model_id_lookup.items():
+                          if normalized in id_pattern or id_pattern in normalized:
+                              fm = id_fm
+                              break
+                  if fm:
+                      matched_count += 1
+                      reference_records.append({
+                          'model_name': model_name, 'model_id': fm.get('model_id', ''), 'model_arn': fm.get('model_arn', ''),
+                          'provider_name': fm.get('provider_name', ''), 'input_modalities': fm.get('input_modalities', ''),
+                          'output_modalities': fm.get('output_modalities', ''), 'response_streaming_supported': fm.get('response_streaming_supported', ''),
+                          'customizations_supported': fm.get('customizations_supported', ''), 'inference_types_supported': fm.get('inference_types_supported', ''),
+                          'model_lifecycle_status': fm.get('model_lifecycle_status', ''), 'collected_at': collected_at
+                      })
+                  else:
+                      reference_records.append({
+                          'model_name': model_name, 'model_id': '', 'model_arn': '', 'provider_name': '',
+                          'input_modalities': '', 'output_modalities': '', 'response_streaming_supported': '',
+                          'customizations_supported': '', 'inference_types_supported': '', 'model_lifecycle_status': '', 'collected_at': collected_at
+                      })
+              parsed_normalized = {normalize_model_name(n) for n in model_names_set}
+              for fm in foundation_models:
+                  fm_normalized = normalize_model_name(fm['model_name'])
+                  if fm_normalized and fm_normalized not in parsed_normalized:
+                      reference_records.append({
+                          'model_name': fm['model_name'], 'model_id': fm.get('model_id', ''), 'model_arn': fm.get('model_arn', ''),
+                          'provider_name': fm.get('provider_name', ''), 'input_modalities': fm.get('input_modalities', ''),
+                          'output_modalities': fm.get('output_modalities', ''), 'response_streaming_supported': fm.get('response_streaming_supported', ''),
+                          'customizations_supported': fm.get('customizations_supported', ''), 'inference_types_supported': fm.get('inference_types_supported', ''),
+                          'model_lifecycle_status': fm.get('model_lifecycle_status', ''), 'collected_at': collected_at
+                      })
+              print(f"Model reference built: {len(reference_records)} total, {matched_count} matched")
+              return reference_records
+
+          # ============================================
+          # AWS Config Functions with ARN Expansion
+          # ============================================
+          def get_inference_profiles_from_config(config_client, aggregator_name):
+              profiles_raw = []
+              collected_at = datetime.utcnow().isoformat() + 'Z'
+              print(f"Querying Config Aggregator for AWS::Bedrock::ApplicationInferenceProfile")
+              try:
+                  paginator = config_client.get_paginator('list_aggregate_discovered_resources')
+                  for page in paginator.paginate(ConfigurationAggregatorName=aggregator_name, ResourceType='AWS::Bedrock::ApplicationInferenceProfile'):
+                      for resource in page.get('ResourceIdentifiers', []):
+                          try:
+                              config_response = config_client.get_aggregate_resource_config(
+                                  ConfigurationAggregatorName=aggregator_name,
+                                  ResourceIdentifier={'SourceAccountId': resource['SourceAccountId'], 'SourceRegion': resource['SourceRegion'],
+                                      'ResourceId': resource['ResourceId'], 'ResourceType': resource['ResourceType']})
+                              config_item = config_response.get('ConfigurationItem', {})
+                              configuration_str = config_item.get('configuration', '{}')
+                              try:
+                                  configuration = json.loads(configuration_str)
+                              except:
+                                  configuration = {}
+                              model_arns_list = [m.get('ModelArn', '') for m in configuration.get('Models', []) if m.get('ModelArn')]
+                              model_arns_str = ', '.join(model_arns_list)
+                              tags_list = configuration.get('Tags', [])
+                              tags = json.dumps({t.get('Key', ''): t.get('Value', '') for t in tags_list if t.get('Key')}) if tags_list else ''
+                              profiles_raw.append({
+                                  'resource_id': resource['ResourceId'],
+                                  'resource_name': resource.get('ResourceName', configuration.get('InferenceProfileName', '')),
+                                  'resource_arn': config_item.get('arn', configuration.get('InferenceProfileArn', resource['ResourceId'])),
+                                  'source_account_id': resource['SourceAccountId'],
+                                  'source_region': resource['SourceRegion'],
+                                  'status': configuration.get('Status', ''),
+                                  'inference_profile_type': configuration.get('Type', ''),
+                                  'model_arns_str': model_arns_str,
+                                  'tags': tags,
+                                  'configuration': configuration_str,
+                                  'created_at': configuration.get('CreatedAt', ''),
+                                  'updated_at': configuration.get('UpdatedAt', ''),
+                                  'collected_at': collected_at
+                              })
+                          except Exception as e:
+                              print(f"Error getting config for {resource['ResourceId']}: {str(e)}")
+                  print(f"Found {len(profiles_raw)} Inference Profiles (raw)")
+              except Exception as e:
+                  print(f"Error listing Inference Profiles: {str(e)}")
+              
+              # Expand profiles by model ARN
+              profiles_expanded = []
+              for profile in profiles_raw:
+                  arns = split_arns_by_comma(profile['model_arns_str'])
+                  is_multi = '1' if len(arns) >= 2 else '0'
+                  if not arns:
+                      profiles_expanded.append({
+                          'resource_id': profile['resource_id'],
+                          'resource_name': profile['resource_name'],
+                          'resource_arn': profile['resource_arn'],
+                          'source_account_id': profile['source_account_id'],
+                          'source_region': profile['source_region'],
+                          'status': profile['status'],
+                          'inference_profile_type': profile['inference_profile_type'],
+                          'model_arn': '',
+                          'is_multi_model': is_multi,
+                          'tags': profile['tags'],
+                          'configuration': profile['configuration'],
+                          'created_at': profile['created_at'],
+                          'updated_at': profile['updated_at'],
+                          'collected_at': profile['collected_at']
+                      })
+                  else:
+                      for arn in arns:
+                          profiles_expanded.append({
+                              'resource_id': profile['resource_id'],
+                              'resource_name': profile['resource_name'],
+                              'resource_arn': profile['resource_arn'],
+                              'source_account_id': profile['source_account_id'],
+                              'source_region': profile['source_region'],
+                              'status': profile['status'],
+                              'inference_profile_type': profile['inference_profile_type'],
+                              'model_arn': arn,
+                              'is_multi_model': is_multi,
+                              'tags': profile['tags'],
+                              'configuration': profile['configuration'],
+                              'created_at': profile['created_at'],
+                              'updated_at': profile['updated_at'],
+                              'collected_at': profile['collected_at']
+                          })
+              print(f"Expanded to {len(profiles_expanded)} Inference Profile records")
+              return profiles_expanded
+
+          def get_knowledge_bases_from_config(config_client, aggregator_name):
+              knowledge_bases_raw = []
+              collected_at = datetime.utcnow().isoformat() + 'Z'
+              print(f"Querying Config Aggregator for AWS::Bedrock::KnowledgeBase")
+              try:
+                  paginator = config_client.get_paginator('list_aggregate_discovered_resources')
+                  for page in paginator.paginate(ConfigurationAggregatorName=aggregator_name, ResourceType='AWS::Bedrock::KnowledgeBase'):
+                      for resource in page.get('ResourceIdentifiers', []):
+                          try:
+                              config_response = config_client.get_aggregate_resource_config(
+                                  ConfigurationAggregatorName=aggregator_name,
+                                  ResourceIdentifier={'SourceAccountId': resource['SourceAccountId'], 'SourceRegion': resource['SourceRegion'],
+                                      'ResourceId': resource['ResourceId'], 'ResourceType': resource['ResourceType']})
+                              config_item = config_response.get('ConfigurationItem', {})
+                              configuration_str = config_item.get('configuration', '{}')
+                              try:
+                                  configuration = json.loads(configuration_str)
+                              except:
+                                  configuration = {}
+                              kb_config = configuration.get('KnowledgeBaseConfiguration', {})
+                              vector_config = kb_config.get('VectorKnowledgeBaseConfiguration', {})
+                              storage_config = configuration.get('StorageConfiguration', {})
+                              embedding_model_arns_str = vector_config.get('EmbeddingModelArn', '')
+                              tags_list = configuration.get('Tags', [])
+                              tags = json.dumps({t.get('Key', ''): t.get('Value', '') for t in tags_list if t.get('Key')}) if tags_list else ''
+                              knowledge_bases_raw.append({
+                                  'resource_id': resource['ResourceId'],
+                                  'resource_name': resource.get('ResourceName', configuration.get('Name', '')),
+                                  'resource_arn': config_item.get('arn', configuration.get('KnowledgeBaseArn', resource['ResourceId'])),
+                                  'source_account_id': resource['SourceAccountId'],
+                                  'source_region': resource['SourceRegion'],
+                                  'status': configuration.get('Status', ''),
+                                  'knowledge_base_type': kb_config.get('Type', ''),
+                                  'embedding_model_arns_str': embedding_model_arns_str,
+                                  'storage_type': storage_config.get('Type', ''),
+                                  'tags': tags,
+                                  'configuration': configuration_str,
+                                  'created_at': configuration.get('CreatedAt', ''),
+                                  'updated_at': configuration.get('UpdatedAt', ''),
+                                  'collected_at': collected_at
+                              })
+                          except Exception as e:
+                              print(f"Error getting config for {resource['ResourceId']}: {str(e)}")
+                  print(f"Found {len(knowledge_bases_raw)} Knowledge Bases (raw)")
+              except Exception as e:
+                  print(f"Error listing Knowledge Bases: {str(e)}")
+              
+              # Expand knowledge bases by embedding model ARN
+              knowledge_bases_expanded = []
+              for kb in knowledge_bases_raw:
+                  arns = split_arns_by_comma(kb['embedding_model_arns_str'])
+                  is_multi = '1' if len(arns) >= 2 else '0'
+                  if not arns:
+                      knowledge_bases_expanded.append({
+                          'resource_id': kb['resource_id'],
+                          'resource_name': kb['resource_name'],
+                          'resource_arn': kb['resource_arn'],
+                          'source_account_id': kb['source_account_id'],
+                          'source_region': kb['source_region'],
+                          'status': kb['status'],
+                          'knowledge_base_type': kb['knowledge_base_type'],
+                          'embedding_model_arn': '',
+                          'is_multi_model': is_multi,
+                          'storage_type': kb['storage_type'],
+                          'tags': kb['tags'],
+                          'configuration': kb['configuration'],
+                          'created_at': kb['created_at'],
+                          'updated_at': kb['updated_at'],
+                          'collected_at': kb['collected_at']
+                      })
+                  else:
+                      for arn in arns:
+                          knowledge_bases_expanded.append({
+                              'resource_id': kb['resource_id'],
+                              'resource_name': kb['resource_name'],
+                              'resource_arn': kb['resource_arn'],
+                              'source_account_id': kb['source_account_id'],
+                              'source_region': kb['source_region'],
+                              'status': kb['status'],
+                              'knowledge_base_type': kb['knowledge_base_type'],
+                              'embedding_model_arn': arn,
+                              'is_multi_model': is_multi,
+                              'storage_type': kb['storage_type'],
+                              'tags': kb['tags'],
+                              'configuration': kb['configuration'],
+                              'created_at': kb['created_at'],
+                              'updated_at': kb['updated_at'],
+                              'collected_at': kb['collected_at']
+                          })
+              print(f"Expanded to {len(knowledge_bases_expanded)} Knowledge Base records")
+              return knowledge_bases_expanded
+
+          # ============================================
+          # Main Lambda Handler
+          # ============================================
+          def lambda_handler(event, context):
+              bucket_name = os.environ['S3_BUCKET_NAME']
+              aggregator_name = os.environ['AGGREGATOR_NAME']
+              config_region = os.environ.get('CONFIG_AGGREGATOR_REGION', 'us-east-1')
+              print("=" * 60)
+              print("BEDROCK EOL TRACKER - WITH DATA EXPANSION")
+              print("=" * 60)
+              config_client = boto3.client('config', region_name=config_region)
+              stepfunctions = boto3.client('stepfunctions')
+              account_number = context.invoked_function_arn.split(":")[4]
+              collected_at = datetime.utcnow().isoformat() + 'Z'
+              try:
+                  print("\nSTEP 1: Parsing model lifecycle HTML...")
+                  active_models_raw, legacy_models_raw, eol_models_raw = parse_model_lifecycle_html()
+                  print(f"Raw counts - Active: {len(active_models_raw)}, Legacy: {len(legacy_models_raw)}, EOL: {len(eol_models_raw)}")
+                  
+                  print("\nSTEP 2: Building active models from Bedrock API...")
+                  foundation_models = get_foundation_models_from_bedrock()
+                  active_models = []
+                  for fm in foundation_models:
+                      if fm.get('model_lifecycle_status', '').upper() == 'ACTIVE':
+                          active_models.append({
+                              'provider': fm.get('provider_name', ''),
+                              'model_name': fm.get('model_name', ''),
+                              'model_id': fm.get('model_id', ''),
+                              'regions_supported': '',
+                              'launch_date': '',
+                              'eol_date': '',
+                              'input_modalities': fm.get('input_modalities', ''),
+                              'output_modalities': fm.get('output_modalities', ''),
+                              'collected_at': collected_at
+                          })
+                  print(f"Active models from API: {len(active_models)}")
+                  
+                  print("\nSTEP 2b: Expanding legacy/EOL records by region...")
+                  legacy_models = expand_legacy_models(legacy_models_raw)
+                  eol_models = expand_eol_models(eol_models_raw)
+                  print(f"Expanded counts - Legacy: {len(legacy_models)}, EOL: {len(eol_models)}")
+                  
+                  if active_models:
+                      update_s3_file(bucket_name, 'bedrock-active-models', 'active.json', '\n'.join(json.dumps(item) for item in active_models), account_number)
+                  if legacy_models:
+                      update_s3_file(bucket_name, 'bedrock-legacy-models', 'legacy.json', '\n'.join(json.dumps(item) for item in legacy_models), account_number)
+                  if eol_models:
+                      update_s3_file(bucket_name, 'bedrock-eol-models', 'eol.json', '\n'.join(json.dumps(item) for item in eol_models), account_number)
+                  
+                  print("\nSTEP 3: Building model reference table...")
+                  model_reference = build_model_reference(active_models, legacy_models_raw, eol_models_raw, collected_at)
+                  if model_reference:
+                      update_s3_file(bucket_name, 'bedrock-model-reference', 'reference.json', '\n'.join(json.dumps(item) for item in model_reference), account_number)
+                  
+                  print("\nSTEP 4: Getting Inference Profiles...")
+                  profiles = get_inference_profiles_from_config(config_client, aggregator_name)
+                  if profiles:
+                      update_s3_file(bucket_name, 'bedrock-inference-profiles', 'profiles.json', '\n'.join(json.dumps(item) for item in profiles), account_number)
+                  
+                  print("\nSTEP 5: Getting Knowledge Bases...")
+                  knowledge_bases = get_knowledge_bases_from_config(config_client, aggregator_name)
+                  if knowledge_bases:
+                      update_s3_file(bucket_name, 'bedrock-knowledge-bases', 'knowledge-bases.json', '\n'.join(json.dumps(item) for item in knowledge_bases), account_number)
+                  
+                  print("\nSTEP 6: Triggering Athena table creation...")
+                  results_bucket = os.environ.get('ATHENA_RESULTS_BUCKET', bucket_name)
+                  response = stepfunctions.start_execution(
+                      stateMachineArn=os.environ['STATE_MACHINE_ARN'],
+                      input=json.dumps({'S3BucketName': bucket_name, 'AthenaDatabase': os.environ['ATHENA_DATABASE'],
+                          'AthenaWorkGroup': os.environ['ATHENA_WORK_GROUP'], 'AthenaResultsBucket': results_bucket})
+                  )
+                  print(f"Started Step Function: {response['executionArn']}")
+                  summary = {
+                      'active_models_from_api': len(active_models),
+                      'legacy_models_raw': len(legacy_models_raw), 'legacy_models_expanded': len(legacy_models),
+                      'eol_models_raw': len(eol_models_raw), 'eol_models_expanded': len(eol_models),
+                      'model_reference': len(model_reference),
+                      'inference_profiles': len(profiles),
+                      'knowledge_bases': len(knowledge_bases)
+                  }
+                  print(f"\nSUMMARY: {json.dumps(summary, indent=2)}")
+                  return {'statusCode': 200, 'body': json.dumps(summary)}
+              except Exception as e:
+                  print(f"ERROR: {str(e)}")
+                  import traceback
+                  traceback.print_exc()
+                  return {'statusCode': 500, 'body': json.dumps(f'Error: {str(e)}')}
+
+  BedrockEOLDataLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockEOLDataLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${S3BucketName}/*'
+              - Effect: Allow
+                Action:
+                  - config:ListAggregateDiscoveredResources
+                  - config:GetAggregateResourceConfig
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/bedrock_EOLDataProcessor:*'
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref BedrockAthenaTableCreationStateMachine
+
+  BedrockEOLDataLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/bedrock_EOLDataProcessor'
+      RetentionInDays: 30
+
+  # ============================================
+  # EventBridge Schedule
+  # ============================================
+  BedrockScheduleCustomResource:
+    Type: Custom::BedrockSchedule
+    DependsOn: 
+      - BedrockEOLDataLambdaFunction
+      - BedrockUpdateLambdaEnvCustomResource
+    Properties:
+      ServiceToken: !GetAtt BedrockScheduleFunction.Arn
+      LambdaFunctionArn: !GetAtt BedrockEOLDataLambdaFunction.Arn
+      ExecutionFrequencyHours: !Ref ExecutionFrequencyHours
+
+  BedrockScheduleFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock_ScheduleCreator
+      Handler: index.handler
+      Role: !GetAtt BedrockScheduleRole.Arn
+      Runtime: python3.11
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  events_client = boto3.client('events')
+                  lambda_client = boto3.client('lambda')
+                  rule_name = 'bedrock_EOLDataProcessorScheduleRule'
+                  function_arn = event['ResourceProperties']['LambdaFunctionArn']
+                  
+                  if event['RequestType'] in ['Create', 'Update']:
+                      hours = int(event['ResourceProperties']['ExecutionFrequencyHours'])
+                      schedule = f"rate({hours} hour{'s' if hours > 1 else ''})"
+                      events_client.put_rule(Name=rule_name, ScheduleExpression=schedule, State='ENABLED', Description='Schedule for Bedrock EOL Data Processor')
+                      events_client.put_targets(Rule=rule_name, Targets=[{'Id': 'BedrockTarget', 'Arn': function_arn}])
+                      try:
+                          lambda_client.add_permission(FunctionName=function_arn, StatementId='BedrockSchedulePermission',
+                              Action='lambda:InvokeFunction', Principal='events.amazonaws.com',
+                              SourceArn=f"arn:aws:events:{context.invoked_function_arn.split(':')[3]}:{context.invoked_function_arn.split(':')[4]}:rule/{rule_name}")
+                      except lambda_client.exceptions.ResourceConflictException:
+                          pass
+                  elif event['RequestType'] == 'Delete':
+                      try:
+                          events_client.remove_targets(Rule=rule_name, Ids=['BedrockTarget'])
+                          events_client.delete_rule(Name=rule_name)
+                          lambda_client.remove_permission(FunctionName=function_arn, StatementId='BedrockSchedulePermission')
+                      except:
+                          pass
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(e)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  BedrockScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockSchedulePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:PutTargets
+                  - events:DeleteRule
+                  - events:RemoveTargets
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                Resource: !GetAtt BedrockEOLDataLambdaFunction.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # ============================================
+  # Update Lambda Environment
+  # ============================================
+  BedrockUpdateLambdaEnvCustomResource:
+    Type: Custom::UpdateLambdaEnv
+    DependsOn: 
+     - BedrockEOLDataLambdaFunction
+     - BedrockAthenaTableCreationStateMachine
+    Properties:
+      ServiceToken: !GetAtt BedrockUpdateLambdaEnvFunction.Arn
+      LambdaFunctionName: !Ref BedrockEOLDataLambdaFunction
+      StateMachineArn: !Ref BedrockAthenaTableCreationStateMachine
+
+  BedrockUpdateLambdaEnvFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock_UpdateLambdaEnv
+      Handler: index.handler
+      Role: !GetAtt BedrockUpdateLambdaEnvRole.Arn
+      Runtime: python3.11
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] in ['Create', 'Update']:
+                      lambda_client = boto3.client('lambda')
+                      function_name = event['ResourceProperties']['LambdaFunctionName']
+                      state_machine_arn = event['ResourceProperties']['StateMachineArn']
+                      response = lambda_client.get_function_configuration(FunctionName=function_name)
+                      env_vars = response['Environment']['Variables']
+                      env_vars['STATE_MACHINE_ARN'] = state_machine_arn
+                      lambda_client.update_function_configuration(FunctionName=function_name, Environment={'Variables': env_vars})
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(e)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  BedrockUpdateLambdaEnvRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockUpdateLambdaEnvPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionConfiguration
+                Resource: !GetAtt BedrockEOLDataLambdaFunction.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # ============================================
+  # S3 Notification
+  # ============================================
+  BedrockS3NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'BedrockEOLNotification-${AWS::Region}'
+
+  BedrockS3NotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref BedrockS3NotificationTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:s3:::${S3BucketName}'
+      Topics:
+        - !Ref BedrockS3NotificationTopic
+
+  BedrockS3NotificationCustomResource:
+    Type: Custom::S3Notification
+    DependsOn: BedrockS3NotificationTopicPolicy
+    Properties:
+      ServiceToken: !GetAtt BedrockS3NotificationFunction.Arn
+      BucketName: !Ref S3BucketName
+      TopicArn: !Ref BedrockS3NotificationTopic
+
+  BedrockS3NotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock_S3NotificationSetup
+      Handler: index.handler
+      Role: !GetAtt BedrockS3NotificationRole.Arn
+      Runtime: python3.11
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              s3 = boto3.client('s3')
+              try:
+                  bucket_name = event['ResourceProperties']['BucketName']
+                  topic_arn = event['ResourceProperties']['TopicArn']
+                  if event['RequestType'] in ['Create', 'Update']:
+                      try:
+                          existing = s3.get_bucket_notification_configuration(Bucket=bucket_name)
+                          topic_configs = existing.get('TopicConfigurations', [])
+                      except:
+                          topic_configs = []
+                      topic_configs = [c for c in topic_configs if c.get('Id') != 'BedrockNotification']
+                      topic_configs.append({'Id': 'BedrockNotification', 'TopicArn': topic_arn, 'Events': ['s3:ObjectCreated:*'],
+                          'Filter': {'Key': {'FilterRules': [{'Name': 'prefix', 'Value': 'bedrock-'}]}}})
+                      s3.put_bucket_notification_configuration(Bucket=bucket_name, NotificationConfiguration={'TopicConfigurations': topic_configs})
+                  elif event['RequestType'] == 'Delete':
+                      try:
+                          existing = s3.get_bucket_notification_configuration(Bucket=bucket_name)
+                          topic_configs = [c for c in existing.get('TopicConfigurations', []) if c.get('Id') != 'BedrockNotification']
+                          s3.put_bucket_notification_configuration(Bucket=bucket_name, NotificationConfiguration={'TopicConfigurations': topic_configs})
+                      except:
+                          pass
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
+
+  BedrockS3NotificationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockS3NotificationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketNotification
+                  - s3:PutBucketNotification
+                  - s3:GetBucketNotificationConfiguration
+                  - s3:PutBucketNotificationConfiguration
+                Resource: !Sub 'arn:aws:s3:::${S3BucketName}'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # ============================================
+  # CloudWatch: EOL Metrics Publisher (Profiles + Knowledge Bases)
+  # ============================================
+  EOLAlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasNotificationEmail
+    Properties:
+      TopicName: bedrock-eol-alerts
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref NotificationEmail
+
+  EOLMetricsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bedrock_EOLMetricsPublisher
+      Handler: index.handler
+      Role: !GetAtt EOLMetricsRole.Arn
+      Runtime: python3.11
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3BucketName
+          SNS_TOPIC_ARN: !If [HasNotificationEmail, !Ref EOLAlertTopic, '']
+          ALERT_THRESHOLD_DAYS: !Ref AlertThresholdDays
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import re
+          from datetime import datetime, date, timezone
+
+          def load_jsonl(s3, bucket, prefix):
+              items = []
+              try:
+                  resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+                  for obj in resp.get('Contents', []):
+                      body = s3.get_object(Bucket=bucket, Key=obj['Key'])['Body'].read().decode()
+                      for line in body.strip().split('\n'):
+                          if line.strip():
+                              items.append(json.loads(line))
+              except Exception as e:
+                  print(f"Error reading {prefix}: {e}")
+              return items
+
+          def parse_eol(s):
+              for fmt in ['%B %d, %Y', '%Y-%m-%d']:
+                  try:
+                      return datetime.strptime(re.sub(r'\s+', ' ', s.strip()), fmt).date()
+                  except:
+                      pass
+              return None
+
+          def handler(event, context):
+              s3 = boto3.client('s3')
+              cw = boto3.client('cloudwatch')
+              bucket = __import__('os').environ['S3_BUCKET']
+              today = date.today()
+              now = datetime.now(timezone.utc)
+
+              # Build lifecycle lookup
+              lifecycle = {}
+              for prefix in ['bedrock-legacy-models/', 'bedrock-eol-models/']:
+                  for rec in load_jsonl(s3, bucket, prefix):
+                      mid = rec.get('recommended_model_id', '')
+                      eol_str = rec.get('eol_date', '')
+                      if mid and eol_str:
+                          dt = parse_eol(eol_str)
+                          if dt:
+                              lifecycle[mid] = dt
+
+              # Deduplicate inference profiles by resource_id, track worst EOL per profile
+              profile_map = {}
+              for p in load_jsonl(s3, bucket, 'bedrock-inference-profiles/'):
+                  rid = p['resource_id']
+                  mid = p['model_arn'].split('/')[-1] if '/' in p['model_arn'] else ''
+                  if rid not in profile_map:
+                      profile_map[rid] = {'rec': p, 'worst_days': 9999}
+                  if mid in lifecycle:
+                      dl = (lifecycle[mid] - today).days
+                      if dl < profile_map[rid]['worst_days']:
+                          profile_map[rid]['worst_days'] = dl
+                          profile_map[rid]['worst_model'] = mid
+              profiles = list(profile_map.values())
+
+              # Deduplicate knowledge bases
+              kb_seen = set()
+              kbs = []
+              for kb in load_jsonl(s3, bucket, 'bedrock-knowledge-bases/'):
+                  key = (kb.get('resource_id', ''), kb.get('embedding_model_arn', ''))
+                  if key not in kb_seen:
+                      kb_seen.add(key)
+                      kbs.append(kb)
+
+              metric_data = []
+
+              # Profile metrics
+              p_eol = p_30 = p_60 = p_180 = 0
+              for entry in profiles:
+                  days_left = entry['worst_days']
+                  if days_left == 9999:
+                      continue
+                  p = entry['rec']
+                  model_id = entry.get('worst_model', '')
+                  if days_left < 0: p_eol += 1
+                  if days_left <= 30: p_30 += 1
+                  if days_left <= 60: p_60 += 1
+                  if days_left <= 180: p_180 += 1
+                  metric_data.append({'MetricName': 'DaysUntilEOL', 'Value': float(days_left), 'Unit': 'Count', 'Timestamp': now,
+                      'Dimensions': [{'Name': 'ResourceType', 'Value': 'InferenceProfile'},
+                                     {'Name': 'AccountId', 'Value': p.get('source_account_id', '')},
+                                     {'Name': 'Region', 'Value': p.get('source_region', '')},
+                                     {'Name': 'ModelId', 'Value': model_id}]})
+
+              # Knowledge base metrics
+              kb_eol = kb_30 = kb_60 = kb_180 = 0
+              for kb in kbs:
+                  model_id = kb.get('embedding_model_arn', '').split('/')[-1] if '/' in kb.get('embedding_model_arn', '') else ''
+                  if model_id not in lifecycle:
+                      continue
+                  days_left = (lifecycle[model_id] - today).days
+                  if days_left < 0: kb_eol += 1
+                  if days_left <= 30: kb_30 += 1
+                  if days_left <= 60: kb_60 += 1
+                  if days_left <= 180: kb_180 += 1
+                  metric_data.append({'MetricName': 'DaysUntilEOL', 'Value': float(days_left), 'Unit': 'Count', 'Timestamp': now,
+                      'Dimensions': [{'Name': 'ResourceType', 'Value': 'KnowledgeBase'},
+                                     {'Name': 'AccountId', 'Value': kb.get('source_account_id', '')},
+                                     {'Name': 'Region', 'Value': kb.get('source_region', '')},
+                                     {'Name': 'ModelId', 'Value': model_id}]})
+
+              # Aggregates
+              p_active = len(profiles) - p_180
+              kb_active = len(kbs) - kb_180
+              for name, val in [
+                  ('ProfilesEOLPassed', p_eol), ('ProfilesAtRisk30Days', p_30),
+                  ('ProfilesAtRisk60Days', p_60), ('ProfilesAtRisk180Days', p_180),
+                  ('ProfilesActive', p_active),
+                  ('KBsEOLPassed', kb_eol), ('KBsAtRisk30Days', kb_30),
+                  ('KBsAtRisk60Days', kb_60), ('KBsAtRisk180Days', kb_180),
+                  ('KBsActive', kb_active),
+                  ('TotalTrackedProfiles', len(profiles)), ('TotalTrackedKBs', len(kbs))]:
+                  metric_data.append({'MetricName': name, 'Value': float(val), 'Unit': 'Count', 'Timestamp': now})
+
+              for i in range(0, len(metric_data), 25):
+                  cw.put_metric_data(Namespace='BedrockLifecycle', MetricData=metric_data[i:i+25])
+
+              # Update dashboard ARN listing
+              region = __import__('os').environ.get('AWS_REGION', 'us-west-2')
+              md_lines = ['| Status | Type | Account | Region | Name | Resource ARN | Model | EOL Date | Days |', '|---|---|---|---|---|---|---|---|---|']
+              for entry in profiles:
+                  days_left = entry['worst_days']
+                  if days_left == 9999: continue
+                  p = entry['rec']
+                  mid = entry.get('worst_model', '')
+                  st = '🔴' if days_left < 0 else '🟠' if days_left <= 30 else '🟡' if days_left <= 60 else '🔵'
+                  md_lines.append(f"| {st} | Profile | {p.get('source_account_id','')} | {p.get('source_region','')} | {p.get('resource_name','')} | `{p.get('resource_arn','')}` | `{mid[:40]}` | {lifecycle.get(mid,'')} | {days_left} |")
+              for kb in kbs:
+                  mid = kb.get('embedding_model_arn','').split('/')[-1] if '/' in kb.get('embedding_model_arn','') else ''
+                  if mid not in lifecycle: continue
+                  dl = (lifecycle[mid] - today).days
+                  st = '🔴' if dl < 0 else '🟠' if dl <= 30 else '🟡' if dl <= 60 else '🔵'
+                  md_lines.append(f"| {st} | KB | {kb.get('source_account_id','')} | {kb.get('source_region','')} | `{kb.get('resource_name','')}` | `{mid[:40]}` | {lifecycle[mid]} | {dl} |")
+              md_text = '\n'.join(md_lines)[:8000]
+
+              # Build Active resources table
+              active_lines = ['| Type | Account | Region | Name | Resource ARN | Model |', '|---|---|---|---|---|---|']
+              for entry in profiles:
+                  if entry['worst_days'] == 9999:
+                      p = entry['rec']
+                      mid = p['model_arn'].split('/')[-1] if '/' in p['model_arn'] else ''
+                      active_lines.append(f"| Profile | {p.get('source_account_id','')} | {p.get('source_region','')} | {p.get('resource_name','')} | `{p.get('resource_arn','')}` | `{mid[:40]}` |")
+              for kb in kbs:
+                  mid = kb.get('embedding_model_arn','').split('/')[-1] if '/' in kb.get('embedding_model_arn','') else ''
+                  if mid not in lifecycle:
+                      active_lines.append(f"| KB | {kb.get('source_account_id','')} | {kb.get('source_region','')} | {kb.get('resource_name','')} | `{kb.get('resource_arn','')}` | `{mid[:40]}` |")
+              active_text = '\n'.join(active_lines)[:8000]
+
+              try:
+                  dash_resp = cw.get_dashboard(DashboardName='Bedrock-Model-Lifecycle')
+                  dash_body = json.loads(dash_resp['DashboardBody'])
+                  # Find or update Legacy/EOL table
+                  eol_found = False
+                  active_found = False
+                  for w in dash_body['widgets']:
+                      if w['type'] == 'text' and '| Status' in w.get('properties',{}).get('markdown','')[:20]:
+                          w['properties']['markdown'] = md_text
+                          eol_found = True
+                      elif w['type'] == 'text' and 'Active Resources' in w.get('properties',{}).get('markdown',''):
+                          w['properties']['markdown'] = active_text
+                          active_found = True
+                  if not eol_found:
+                      dash_body['widgets'].append({'type':'text','x':0,'y':11,'width':24,'height':10,'properties':{'markdown': md_text}})
+                  if not active_found:
+                      dash_body['widgets'].append({'type':'text','x':0,'y':21,'width':24,'height':1,'properties':{'markdown': '## Active Resources (no EOL planned)'}})
+                      dash_body['widgets'].append({'type':'text','x':0,'y':22,'width':24,'height':8,'properties':{'markdown': active_text}})
+                  cw.put_dashboard(DashboardName='Bedrock-Model-Lifecycle', DashboardBody=json.dumps(dash_body))
+                  print("Dashboard ARN table updated")
+              except Exception as e:
+                  print(f"Dashboard update error (non-fatal): {e}")
+
+              # Send detailed alert with affected ARNs if any resources at risk
+              sns_topic = __import__('os').environ.get('SNS_TOPIC_ARN', '')
+              alert_days = int(__import__('os').environ.get('ALERT_THRESHOLD_DAYS', '30'))
+              if sns_topic and (p_eol > 0 or any(e['worst_days'] <= alert_days for e in profiles if e['worst_days'] != 9999) or kb_eol > 0 or any((lifecycle.get(kb.get('embedding_model_arn','').split('/')[-1], today) - today).days <= alert_days for kb in kbs if kb.get('embedding_model_arn','').split('/')[-1] in lifecycle)):
+                  sns = boto3.client('sns')
+                  lines = [f"Bedrock Model Lifecycle Alert - {today.isoformat()}", f"Alert threshold: {alert_days} days", ""]
+                  if p_eol > 0:
+                      lines.append("=== CRITICAL: Past EOL (requests will FAIL) ===")
+                      lines.append(f"\nInference Profiles ({p_eol}):")
+                      for entry in profiles:
+                          if entry['worst_days'] < 0:
+                              p = entry['rec']
+                              mid = entry.get('worst_model','')
+                              lines.append(f"  {p['resource_arn']}  [{mid}]  Account:{p.get('source_account_id','')}  Region:{p.get('source_region','')}")
+                  if kb_eol > 0:
+                      lines.append(f"\nKnowledge Bases ({kb_eol}) - REINDEX REQUIRED:")
+                      for kb in kbs:
+                          mid = kb.get('embedding_model_arn','').split('/')[-1] if '/' in kb.get('embedding_model_arn','') else ''
+                          if mid in lifecycle and (lifecycle[mid] - today).days < 0:
+                              lines.append(f"  {kb.get('resource_arn','')}  [{mid}]  Account:{kb.get('source_account_id','')}  Region:{kb.get('source_region','')}")
+                  at_risk = [e for e in profiles if 0 <= e['worst_days'] <= alert_days]
+                  if at_risk:
+                      lines.append(f"\n=== EOL within {alert_days} days ===")
+                      lines.append(f"\nInference Profiles ({len(at_risk)}):")
+                      for entry in at_risk:
+                          p = entry['rec']
+                          mid = entry.get('worst_model','')
+                          lines.append(f"  {p['resource_arn']}  [{mid}]  EOL in {entry['worst_days']}d  Account:{p.get('source_account_id','')}  Region:{p.get('source_region','')}")
+                  msg = '\n'.join(lines)
+                  sns.publish(TopicArn=sns_topic, Subject=f'Bedrock EOL Alert: Resources at Risk (threshold: {alert_days}d)', Message=msg[:262144])
+                  print("SNS alert sent")
+
+              print(f"Profiles: EOL={p_eol} 30d={p_30} 60d={p_60} 180d={p_180} | KBs: EOL={kb_eol} 30d={kb_30} 60d={kb_60} 180d={kb_180}")
+              return {'statusCode': 200}
+
+  EOLMetricsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EOLMetricsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:GetDashboard
+                  - cloudwatch:PutDashboard
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  EOLMetricsSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: bedrock-eol-metrics-schedule
+      ScheduleExpression: 'rate(1 day)'
+      State: ENABLED
+      Targets:
+        - Id: EOLMetricsLambda
+          Arn: !GetAtt EOLMetricsFunction.Arn
+
+  EOLMetricsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EOLMetricsFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EOLMetricsSchedule.Arn
+
+  # CloudWatch Alarms (only if email provided)
+  AlarmEOLPassed:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNotificationEmail
+    Properties:
+      AlarmName: Bedrock-EOL-Passed
+      AlarmDescription: 'CRITICAL: Resources using models past EOL date'
+      Namespace: BedrockLifecycle
+      MetricName: ProfilesEOLPassed
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref EOLAlertTopic
+      TreatMissingData: notBreaching
+
+  Alarm30Days:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNotificationEmail
+    Properties:
+      AlarmName: Bedrock-EOL-Within-30-Days
+      AlarmDescription: 'HIGH: Resources using models with EOL within 30 days'
+      Namespace: BedrockLifecycle
+      MetricName: ProfilesAtRisk30Days
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref EOLAlertTopic
+      TreatMissingData: notBreaching
+
+  Alarm60Days:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNotificationEmail
+    Properties:
+      AlarmName: Bedrock-EOL-Within-60-Days
+      AlarmDescription: 'MEDIUM: Resources using models with EOL within 60 days'
+      Namespace: BedrockLifecycle
+      MetricName: ProfilesAtRisk60Days
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref EOLAlertTopic
+      TreatMissingData: notBreaching
+
+  Alarm180Days:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNotificationEmail
+    Properties:
+      AlarmName: Bedrock-EOL-Within-180-Days
+      AlarmDescription: 'LOW: Resources using models with EOL within 180 days'
+      Namespace: BedrockLifecycle
+      MetricName: ProfilesAtRisk180Days
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref EOLAlertTopic
+      TreatMissingData: notBreaching
+
+  AlarmKBEOLPassed:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNotificationEmail
+    Properties:
+      AlarmName: Bedrock-KB-EOL-Passed
+      AlarmDescription: 'CRITICAL: Knowledge Bases using EOL embedding models - reindex required'
+      Namespace: BedrockLifecycle
+      MetricName: KBsEOLPassed
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref EOLAlertTopic
+      TreatMissingData: notBreaching
+
+  AlarmKB30Days:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNotificationEmail
+    Properties:
+      AlarmName: Bedrock-KB-EOL-Within-30-Days
+      AlarmDescription: 'HIGH: Knowledge Bases using models with EOL within 30 days - plan reindex'
+      Namespace: BedrockLifecycle
+      MetricName: KBsAtRisk30Days
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref EOLAlertTopic
+      TreatMissingData: notBreaching
+
+  # CloudWatch Dashboard
+  EOLDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: Bedrock-Model-Lifecycle
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type":"text","x":0,"y":0,"width":24,"height":1,"properties":{"markdown":"## Bedrock Model Lifecycle - EOL Risk Overview"}},
+            {"type":"metric","x":0,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesEOLPassed"]],"title":"🔴 Profiles Past EOL","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":6,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk30Days"]],"title":"🟠 Profiles EOL ≤ 30d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":12,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk60Days"]],"title":"🟡 Profiles EOL ≤ 60d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":18,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk180Days"]],"title":"⚪ Profiles EOL ≤ 180d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":0,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsEOLPassed"]],"title":"🔴 KBs Past EOL","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":6,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk30Days"]],"title":"🟠 KBs EOL ≤ 30d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":12,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk60Days"]],"title":"🟡 KBs EOL ≤ 60d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":18,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk180Days"]],"title":"⚪ KBs EOL ≤ 180d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"text","x":0,"y":9,"width":24,"height":1,"properties":{"markdown":"## All Legacy/EOL Resources\\nARN listing is populated dynamically by the metrics Lambda. See SNS alerts for full details."}}
+          ]
+        }
+
+Outputs:
+  BedrockEOLDataLambdaArn:
+    Description: 'ARN of the Bedrock EOL Data Processor Lambda'
+    Value: !GetAtt BedrockEOLDataLambdaFunction.Arn
+  BedrockStateMachineArn:
+    Description: 'ARN of the Step Functions state machine'
+    Value: !Ref BedrockAthenaTableCreationStateMachine
+  BedrockScheduleRule:
+    Description: 'EventBridge rule name'
+    Value: 'bedrock_EOLDataProcessorScheduleRule'
+  BedrockS3NotificationTopicArn:
+    Description: 'ARN of the SNS topic for S3 notifications'
+    Value: !Ref BedrockS3NotificationTopic
+  ConfigAggregatorUsed:
+    Description: 'Config Aggregator name and region'
+    Value: !Sub '${AggregatorName} (${ConfigAggregatorRegion})'
+  S3DataBucket:
+    Description: 'S3 bucket where source data is stored'
+    Value: !Ref S3BucketName
+  AthenaResultsLocation:
+    Description: 'S3 location for Athena query results'
+    Value: !If 
+      - UseMainBucketForAthenaResults
+      - !Sub 's3://${S3BucketName}/athena-results/'
+      - !Sub 's3://${AthenaResultsBucket}/athena-results/'
+  AthenaTables:
+    Description: 'Athena tables created (6 total)'
+    Value: !Sub |
+      ${AthenaDatabase}.bedrock_active_models
+      ${AthenaDatabase}.bedrock_legacy_models
+      ${AthenaDatabase}.bedrock_eol_models
+      ${AthenaDatabase}.bedrock_model_reference
+      ${AthenaDatabase}.bedrock_inference_profiles
+      ${AthenaDatabase}.bedrock_knowledge_bases
+  DataSourceURL:
+    Description: 'URL of the model lifecycle page being parsed'
+    Value: 'https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle.html'
+  ParsingMethod:
+    Description: 'Method used to parse the model lifecycle page'
+    Value: 'Hybrid (Standard HTML parser with AI fallback using Bedrock Claude 3 Haiku)'
+  ModelReferenceTable:
+    Description: 'Model reference table mapping model names to ARNs'
+    Value: !Sub '${AthenaDatabase}.bedrock_model_reference - Maps model_name to model_arn using Bedrock ListFoundationModels API'
+  DataExpansionFeatures:
+    Description: 'Data expansion features enabled'
+    Value: |
+      - Active models: semicolon-separated regions/dates expanded to individual records
+      - Legacy/EOL models: comma-separated regions expanded, "Regions" suffix and "and" removed
+      - Inference Profiles: model_arn expanded from comma-separated ARNs, is_multi_model flag added
+      - Knowledge Bases: embedding_model_arn expanded from comma-separated ARNs, is_multi_model flag added
