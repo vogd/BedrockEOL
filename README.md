@@ -345,29 +345,6 @@ To disable/enable alerts without redeploying:
 - CloudWatch Console → Alarms → Select alarm → Actions → Disable/Enable alarm actions
 
 ---
-
-## Optional: QuickSight Integration
-
-Deploy the second template for a QuickSight SPICE dataset:
-
-```bash
-aws cloudformation deploy \
-  --template-file 2-BedrockEOLDatasets.yaml \
-  --stack-name bedrock-eol-quicksight \
---s3-bucket <YOUR_S3_BUCKET> \         # Need bucket to upload CloudWatch template there
---s3-prefix cfn-templates \            # Specify prefix where template would be stored
-  --parameter-overrides \
-    AthenaDatabase=default \
-    AthenaWorkGroup=primary \
-    AthenaResultsBucket=my-athena-results \
-    S3BucketName=bedrockeol \
-    QuickSightUserArn=arn:aws:quicksight:us-west-2:123456789:user/default/<quicksightuser> \
-  --capabilities CAPABILITY_IAM \
-  --region us-west-2
-```
-
-This creates an Athena datasource, SPICE dataset, and hourly refresh schedule for QuickSight dashboards.
-
 ---
 
 ## Troubleshooting
