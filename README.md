@@ -220,6 +220,9 @@ aws cloudformation deploy \
   --region us-west-2
 ```
 
+**Note: **   --capabilities CAPABILITY_IAM is just a flag — you pass it exactly as-is. 
+It tells CloudFormation "I acknowledge this template creates IAM roles." No value or ARN needed.
+
 ### First run (populate data immediately)
 
 After deployment, trigger the data processor to collect data:
@@ -229,6 +232,10 @@ After deployment, trigger the data processor to collect data:
 aws lambda invoke --function-name bedrock_EOLDataProcessor \
   --region us-west-2 /tmp/out.json && cat /tmp/out.json
 ```
+Lambda would be triggered according to hours we specified in ExecutionFrequencyHours. We are triggering it after execution to ensure process kicked in.
+
+<img width="1270" height="367" alt="image" src="https://github.com/user-attachments/assets/38d9a122-5697-46e3-881e-2509f57e27aa" />
+
 
 Then trigger the state machine to create Athena tables and publish metrics:
 
@@ -239,6 +246,19 @@ aws stepfunctions start-execution \
   --input '{"AthenaDatabase":"default","AthenaWorkGroup":"primary","S3BucketName":"bedrockeol","AthenaResultsBucket":"my-athena-results"}' \
   --region us-west-2
 ```
+
+Ensure data is writtn to S3 and tables created
+
+<img width="959" height="594" alt="image" src="https://github.com/user-attachments/assets/8e3739f2-218c-44b1-8001-55fe04000e6b" />
+
+<img width="858" height="643" alt="image" src="https://github.com/user-attachments/assets/89fbb179-e6ed-41de-ba25-8358b8b83c9f" />
+
+Verify State machine execution triggered Athena Table creation and Pushed CloudWatch Metrics:
+
+<img width="1181" height="624" alt="bedrock Athena Table CreationstateMachine" src="https://github.com/user-attachments/assets/f8fe26ed-8dde-417c-8c8f-c8eb8c245161" />
+
+<img width="528" height="561" alt="image" src="https://github.com/user-attachments/assets/b306d25e-22c2-472b-9999-df5c86151df5" />
+
 
 ---
 
