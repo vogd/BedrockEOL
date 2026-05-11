@@ -38,10 +38,9 @@ Parameters:
     Type: String
     Description: 'Alert when resources have EOL within this many days'
     AllowedValues:
-      - '30'
       - '60'
       - '180'
-    Default: '30'
+    Default: '60'
 
 Conditions:
   UseMainBucketForAthenaResults: !Equals 
@@ -1593,6 +1592,7 @@ Resources:
 
               # Build lifecycle lookup
               lifecycle = {}
+              ext_access = {}
               for prefix in ['bedrock-legacy-models/', 'bedrock-eol-models/']:
                   for rec in load_jsonl(s3, bucket, prefix):
                       mid = rec.get('recommended_model_id', '')
@@ -1601,6 +1601,11 @@ Resources:
                           dt = parse_eol(eol_str)
                           if dt:
                               lifecycle[mid] = dt
+                      ext_str = rec.get('public_extended_access_date', '')
+                      if mid and ext_str:
+                          ext_dt = parse_eol(ext_str)
+                          if ext_dt:
+                              ext_access[mid] = ext_dt
 
               # Deduplicate inference profiles by resource_id, track worst EOL per profile
               profile_map = {}
@@ -1628,7 +1633,7 @@ Resources:
               metric_data = []
 
               # Profile metrics
-              p_eol = p_30 = p_60 = p_180 = 0
+              p_eol = p_60 = p_180 = p_ext = 0
               for entry in profiles:
                   days_left = entry['worst_days']
                   if days_left == 9999:
@@ -1636,7 +1641,11 @@ Resources:
                   p = entry['rec']
                   model_id = entry.get('worst_model', '')
                   if days_left < 0: p_eol += 1
-                  if days_left <= 30: p_30 += 1
+                  if days_left <= 60: p_60 += 1
+                  if days_left <= 180: p_180 += 1
+                  if model_id in ext_access and today >= ext_access[model_id]:
+                      p_ext += 1
+                  if days_left < 0: p_eol += 1
                   if days_left <= 60: p_60 += 1
                   if days_left <= 180: p_180 += 1
                   metric_data.append({'MetricName': 'DaysUntilEOL', 'Value': float(days_left), 'Unit': 'Count', 'Timestamp': now,
@@ -1646,16 +1655,17 @@ Resources:
                                      {'Name': 'ModelId', 'Value': model_id}]})
 
               # Knowledge base metrics
-              kb_eol = kb_30 = kb_60 = kb_180 = 0
+              kb_eol = kb_60 = kb_180 = kb_ext = 0
               for kb in kbs:
                   model_id = kb.get('embedding_model_arn', '').split('/')[-1] if '/' in kb.get('embedding_model_arn', '') else ''
                   if model_id not in lifecycle:
                       continue
                   days_left = (lifecycle[model_id] - today).days
                   if days_left < 0: kb_eol += 1
-                  if days_left <= 30: kb_30 += 1
                   if days_left <= 60: kb_60 += 1
                   if days_left <= 180: kb_180 += 1
+                  if model_id in ext_access and today >= ext_access[model_id]:
+                      kb_ext += 1
                   metric_data.append({'MetricName': 'DaysUntilEOL', 'Value': float(days_left), 'Unit': 'Count', 'Timestamp': now,
                       'Dimensions': [{'Name': 'ResourceType', 'Value': 'KnowledgeBase'},
                                      {'Name': 'AccountId', 'Value': kb.get('source_account_id', '')},
@@ -1666,12 +1676,12 @@ Resources:
               p_active = len(profiles) - p_180
               kb_active = len(kbs) - kb_180
               for name, val in [
-                  ('ProfilesEOLPassed', p_eol), ('ProfilesAtRisk30Days', p_30),
+                  ('ProfilesEOLPassed', p_eol),
                   ('ProfilesAtRisk60Days', p_60), ('ProfilesAtRisk180Days', p_180),
-                  ('ProfilesActive', p_active),
-                  ('KBsEOLPassed', kb_eol), ('KBsAtRisk30Days', kb_30),
+                  ('ProfilesActive', p_active), ('ProfilesExtendedAccess', p_ext),
+                  ('KBsEOLPassed', kb_eol),
                   ('KBsAtRisk60Days', kb_60), ('KBsAtRisk180Days', kb_180),
-                  ('KBsActive', kb_active),
+                  ('KBsActive', kb_active), ('KBsExtendedAccess', kb_ext),
                   ('TotalTrackedProfiles', len(profiles)), ('TotalTrackedKBs', len(kbs))]:
                   metric_data.append({'MetricName': name, 'Value': float(val), 'Unit': 'Count', 'Timestamp': now})
 
@@ -1680,7 +1690,7 @@ Resources:
 
               # Update dashboard ARN listing
               region = __import__('os').environ.get('AWS_REGION', 'us-west-2')
-              md_lines = ['| Status | Type | Account | Region | Name | Resource ARN | Model | EOL Date | Days |', '|---|---|---|---|---|---|---|---|---|']
+              md_lines = ['## Legacy/EOL Resources', '| Status | Type | Account | Region | Name | Resource ARN | Model | EOL Date | Days |', '|---|---|---|---|---|---|---|---|---|']
               for entry in profiles:
                   days_left = entry['worst_days']
                   if days_left == 9999: continue
@@ -1697,7 +1707,7 @@ Resources:
               md_text = '\n'.join(md_lines)[:8000]
 
               # Build Active resources table
-              active_lines = ['| Type | Account | Region | Name | Resource ARN | Model |', '|---|---|---|---|---|---|']
+              active_lines = ['## Active Resources (no EOL planned)', '| Type | Account | Region | Name | Resource ARN | Model |', '|---|---|---|---|---|---|']
               for entry in profiles:
                   if entry['worst_days'] == 9999:
                       p = entry['rec']
@@ -1709,24 +1719,32 @@ Resources:
                       active_lines.append(f"| KB | {kb.get('source_account_id','')} | {kb.get('source_region','')} | {kb.get('resource_name','')} | `{kb.get('resource_arn','')}` | `{mid[:40]}` |")
               active_text = '\n'.join(active_lines)[:8000]
 
+              # Build Extended Access listing (premium pricing)
+              ext_lines = ['## ⚠️ Extended Access (premium pricing active)', '| Type | Account | Region | Name | Resource ARN | Model | Ext Access Since |', '|---|---|---|---|---|---|---|']
+              for entry in profiles:
+                  if entry['worst_days'] == 9999: continue
+                  mid = entry.get('worst_model', '')
+                  if mid in ext_access and today >= ext_access[mid]:
+                      p = entry['rec']
+                      ext_lines.append(f"| Profile | {p.get('source_account_id','')} | {p.get('source_region','')} | {p.get('resource_name','')} | `{p.get('resource_arn','')}` | `{mid[:40]}` | {ext_access[mid]} |")
+              for kb in kbs:
+                  mid = kb.get('embedding_model_arn','').split('/')[-1] if '/' in kb.get('embedding_model_arn','') else ''
+                  if mid in ext_access and today >= ext_access[mid]:
+                      ext_lines.append(f"| KB | {kb.get('source_account_id','')} | {kb.get('source_region','')} | {kb.get('resource_name','')} | `{kb.get('resource_arn','')}` | `{mid[:40]}` | {ext_access[mid]} |")
+              ext_text = '\n'.join(ext_lines)[:8000]
+
               try:
                   dash_resp = cw.get_dashboard(DashboardName='Bedrock-Model-Lifecycle')
                   dash_body = json.loads(dash_resp['DashboardBody'])
-                  # Find or update Legacy/EOL table
-                  eol_found = False
-                  active_found = False
-                  for w in dash_body['widgets']:
-                      if w['type'] == 'text' and '| Status' in w.get('properties',{}).get('markdown','')[:20]:
-                          w['properties']['markdown'] = md_text
-                          eol_found = True
-                      elif w['type'] == 'text' and 'Active Resources' in w.get('properties',{}).get('markdown',''):
-                          w['properties']['markdown'] = active_text
-                          active_found = True
-                  if not eol_found:
-                      dash_body['widgets'].append({'type':'text','x':0,'y':11,'width':24,'height':10,'properties':{'markdown': md_text}})
-                  if not active_found:
-                      dash_body['widgets'].append({'type':'text','x':0,'y':21,'width':24,'height':1,'properties':{'markdown': '## Active Resources (no EOL planned)'}})
-                      dash_body['widgets'].append({'type':'text','x':0,'y':22,'width':24,'height':8,'properties':{'markdown': active_text}})
+                  # Remove old table widgets and rebuild
+                  dash_body['widgets'] = [w for w in dash_body['widgets'] if w['type'] == 'metric' or (w['type'] == 'text' and w.get('y', 0) <= 10)]
+                  # Add tables in order: Extended Access, Legacy/EOL, Active
+                  y = 11
+                  dash_body['widgets'].append({'type':'text','x':0,'y':y,'width':24,'height':8,'properties':{'markdown': ext_text}})
+                  y += 8
+                  dash_body['widgets'].append({'type':'text','x':0,'y':y,'width':24,'height':10,'properties':{'markdown': md_text}})
+                  y += 10
+                  dash_body['widgets'].append({'type':'text','x':0,'y':y,'width':24,'height':10,'properties':{'markdown': active_text}})
                   cw.put_dashboard(DashboardName='Bedrock-Model-Lifecycle', DashboardBody=json.dumps(dash_body))
                   print("Dashboard ARN table updated")
               except Exception as e:
@@ -1734,7 +1752,7 @@ Resources:
 
               # Send detailed alert with affected ARNs if any resources at risk
               sns_topic = __import__('os').environ.get('SNS_TOPIC_ARN', '')
-              alert_days = int(__import__('os').environ.get('ALERT_THRESHOLD_DAYS', '30'))
+              alert_days = int(__import__('os').environ.get('ALERT_THRESHOLD_DAYS', '60'))
               if sns_topic and (p_eol > 0 or any(e['worst_days'] <= alert_days for e in profiles if e['worst_days'] != 9999) or kb_eol > 0 or any((lifecycle.get(kb.get('embedding_model_arn','').split('/')[-1], today) - today).days <= alert_days for kb in kbs if kb.get('embedding_model_arn','').split('/')[-1] in lifecycle)):
                   sns = boto3.client('sns')
                   lines = [f"Bedrock Model Lifecycle Alert - {today.isoformat()}", f"Alert threshold: {alert_days} days", ""]
@@ -1764,7 +1782,7 @@ Resources:
                   sns.publish(TopicArn=sns_topic, Subject=f'Bedrock EOL Alert: Resources at Risk (threshold: {alert_days}d)', Message=msg[:262144])
                   print("SNS alert sent")
 
-              print(f"Profiles: EOL={p_eol} 30d={p_30} 60d={p_60} 180d={p_180} | KBs: EOL={kb_eol} 30d={kb_30} 60d={kb_60} 180d={kb_180}")
+              print(f"Profiles: EOL={p_eol} 60d={p_60} 180d={p_180} | KBs: EOL={kb_eol} 60d={kb_60} 180d={kb_180}")
               return {'statusCode': 200}
 
   EOLMetricsRole:
@@ -1842,23 +1860,6 @@ Resources:
         - !Ref EOLAlertTopic
       TreatMissingData: notBreaching
 
-  Alarm30Days:
-    Type: AWS::CloudWatch::Alarm
-    Condition: HasNotificationEmail
-    Properties:
-      AlarmName: Bedrock-EOL-Within-30-Days
-      AlarmDescription: 'HIGH: Resources using models with EOL within 30 days'
-      Namespace: BedrockLifecycle
-      MetricName: ProfilesAtRisk30Days
-      Statistic: Maximum
-      Period: 86400
-      EvaluationPeriods: 1
-      Threshold: 0
-      ComparisonOperator: GreaterThanThreshold
-      AlarmActions:
-        - !Ref EOLAlertTopic
-      TreatMissingData: notBreaching
-
   Alarm60Days:
     Type: AWS::CloudWatch::Alarm
     Condition: HasNotificationEmail
@@ -1910,23 +1911,6 @@ Resources:
         - !Ref EOLAlertTopic
       TreatMissingData: notBreaching
 
-  AlarmKB30Days:
-    Type: AWS::CloudWatch::Alarm
-    Condition: HasNotificationEmail
-    Properties:
-      AlarmName: Bedrock-KB-EOL-Within-30-Days
-      AlarmDescription: 'HIGH: Knowledge Bases using models with EOL within 30 days - plan reindex'
-      Namespace: BedrockLifecycle
-      MetricName: KBsAtRisk30Days
-      Statistic: Maximum
-      Period: 86400
-      EvaluationPeriods: 1
-      Threshold: 0
-      ComparisonOperator: GreaterThanThreshold
-      AlarmActions:
-        - !Ref EOLAlertTopic
-      TreatMissingData: notBreaching
-
   # CloudWatch Dashboard
   EOLDashboard:
     Type: AWS::CloudWatch::Dashboard
@@ -1936,15 +1920,18 @@ Resources:
         {
           "widgets": [
             {"type":"text","x":0,"y":0,"width":24,"height":1,"properties":{"markdown":"## Bedrock Model Lifecycle - EOL Risk Overview"}},
-            {"type":"metric","x":0,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesEOLPassed"]],"title":"🔴 Profiles Past EOL","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"metric","x":6,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk30Days"]],"title":"🟠 Profiles EOL ≤ 30d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"metric","x":12,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk60Days"]],"title":"🟡 Profiles EOL ≤ 60d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"metric","x":18,"y":1,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk180Days"]],"title":"⚪ Profiles EOL ≤ 180d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"metric","x":0,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsEOLPassed"]],"title":"🔴 KBs Past EOL","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"metric","x":6,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk30Days"]],"title":"🟠 KBs EOL ≤ 30d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"metric","x":12,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk60Days"]],"title":"🟡 KBs EOL ≤ 60d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"metric","x":18,"y":5,"width":6,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk180Days"]],"title":"⚪ KBs EOL ≤ 180d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
-            {"type":"text","x":0,"y":9,"width":24,"height":1,"properties":{"markdown":"## All Legacy/EOL Resources\\nARN listing is populated dynamically by the metrics Lambda. See SNS alerts for full details."}}
+            {"type":"metric","x":0,"y":1,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesEOLPassed",{"color":"#d13212"}]],"title":"🔴 Past EOL","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":4,"y":1,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesExtendedAccess",{"color":"#ff5500"}]],"title":"💰 Ext Access","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":12,"y":1,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk60Days",{"color":"#f2d600"}]],"title":"🟡 ≤ 60d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":16,"y":1,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesAtRisk180Days",{"color":"#0073bb"}]],"title":"🔵 ≤ 180d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":20,"y":1,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","ProfilesActive",{"color":"#1d8102"}]],"title":"🟢 Active","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"text","x":0,"y":5,"width":24,"height":1,"properties":{"markdown":"**Knowledge Bases** (embedding model EOL = full reindex required)"}},
+            {"type":"metric","x":0,"y":6,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsEOLPassed",{"color":"#d13212"}]],"title":"🔴 Past EOL","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":4,"y":6,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsExtendedAccess",{"color":"#ff5500"}]],"title":"💰 Ext Access","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":12,"y":6,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk60Days",{"color":"#f2d600"}]],"title":"🟡 ≤ 60d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":16,"y":6,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsAtRisk180Days",{"color":"#0073bb"}]],"title":"🔵 ≤ 180d","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"metric","x":20,"y":6,"width":4,"height":4,"properties":{"metrics":[["BedrockLifecycle","KBsActive",{"color":"#1d8102"}]],"title":"🟢 Active","stat":"Maximum","period":3600,"region":"${AWS::Region}","view":"singleValue"}},
+            {"type":"text","x":0,"y":10,"width":24,"height":1,"properties":{"markdown":"## All Legacy/EOL Resources | ⚠️ Extended Access (premium pricing) | Active Resources\\nTables populated dynamically by the metrics Lambda on each run."}}
           ]
         }
 
