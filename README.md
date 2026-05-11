@@ -224,6 +224,7 @@ aws cloudformation deploy \
 
 **Note: **   --capabilities CAPABILITY_IAM is just a flag — you pass it exactly as-is. 
 It tells CloudFormation "I acknowledge this template creates IAM roles." No value or ARN needed.
+The --s3-bucket flag just tells CloudFormation to upload the template to S3 first (required for templates >51KB). Any existing S3 bucket in the same region works — can be the same AthenaResultsBucket or S3BucketName.
 
 ### First run (populate data immediately)
 
