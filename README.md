@@ -313,19 +313,24 @@ This view can be used by QuickSight or any Athena-compatible tool.
 ### CloudWatch Dashboard
 
 The `Bedrock-Model-Lifecycle` dashboard shows:
-- **Inference Profiles**: 🔴 Past EOL | 🟠 ≤30d | 🟡 ≤60d | 🔵 ≤180d | 🟢 Active
+- **Inference Profiles**: 🔴 Past EOL | 🟠 Ext Access| 🟡 ≤60d | 🔵 ≤180d | 🟢 Active
 - **Knowledge Bases**: Same breakdown (KB EOL = full reindex required)
+- **Extended access**: Profiles with less than 3 months till EOL billed with extra cost
 - **Legacy/EOL Resources table**: Full ARN, account, region, model, days remaining
-- **Active Resources table**: All resources using current models
+- **Active No EOL Resources table**: All resources using current models
+- 
 
 <img width="1475" height="766" alt="Bedrock Model Lifecycle - EOL Risk Overview" src="https://github.com/user-attachments/assets/eb5ca4e1-a657-4191-8fde-bcb5f949865f" />
+
+
+<img width="1658" height="371" alt="Pasted Graphic 68" src="https://github.com/user-attachments/assets/4df52223-6396-432d-adc1-81448e7db95d" />
 
 ### CloudWatch Metrics (namespace: `BedrockLifecycle`)
 
 | Metric | Dimensions | Description |
 |--------|-----------|-------------|
 | `ProfilesEOLPassed` | — | Profiles using dead models |
-| `ProfilesAtRisk30Days` | — | Profiles with EOL ≤ 30 days |
+| `Ext Access` | — | Profiles with Extended costs per inference |
 | `ProfilesAtRisk60Days` | — | Profiles with EOL ≤ 60 days |
 | `ProfilesAtRisk180Days` | — | Profiles with EOL ≤ 180 days |
 | `ProfilesActive` | — | Profiles using current models |
